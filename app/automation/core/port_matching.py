@@ -172,6 +172,7 @@ class ConnectionFrameState:
                 label="连接-初始",
                 overlays_builder=build_graph_region_overlay,
                 visual_callback=visual_callback,
+                use_strict_window_capture=True,
             )
             if reuse_context is not None:
                 reuse_context["screenshot"] = screenshot
@@ -727,23 +728,23 @@ class PortMatchingService:
             self.executor.emit_visual(screenshot, {"circles": circles}, self.visual_callback)
 
         if chosen_src is not None and src_selection_kind in ("flow", "data"):
-            if normalize_kind_text(getattr(chosen_src, "kind", "")) != src_selection_kind:
+            actual_src_kind = normalize_kind_text(getattr(chosen_src, "kind", ""))
+            if actual_src_kind != src_selection_kind:
                 self.logger.log(
                     "端口",
                     "源端口类型与期望不一致",
                     expected=src_selection_kind,
                     actual=str(getattr(chosen_src, "kind", "")),
                 )
-                return None
         if chosen_dst is not None and dst_selection_kind in ("flow", "data"):
-            if normalize_kind_text(getattr(chosen_dst, "kind", "")) != dst_selection_kind:
+            actual_dst_kind = normalize_kind_text(getattr(chosen_dst, "kind", ""))
+            if actual_dst_kind != dst_selection_kind:
                 self.logger.log(
                     "端口",
                     "目标端口类型与期望不一致",
                     expected=dst_selection_kind,
                     actual=str(getattr(chosen_dst, "kind", "")),
                 )
-                return None
 
         return PortSelectionResult(
             src_center=src_center,

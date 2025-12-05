@@ -335,11 +335,12 @@ class FocusController:
                     )
                 return {"rects": rect_items}
 
-            # 推送一帧带有“可见节点ID标签”的截图到执行监控面板
+            # 推送一帧带有“可见节点ID标签”的截图到执行监控面板（使用严格窗口截图，尽量避免遮挡）
             executor.capture_and_emit(
                 label="定位镜头-可见节点ID",
                 overlays_builder=_build_visible_nodes_overlay,
                 visual_callback=self._update_visual,
+                use_strict_window_capture=True,
             )
 
             # 调试：输出当前视口可见节点的名称与X范围，辅助判断定位到哪一支分支

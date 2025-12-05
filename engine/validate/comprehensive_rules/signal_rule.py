@@ -442,48 +442,57 @@ def _validate_signal_ports_for_node(
     static_inputs = set(SIGNAL_SEND_STATIC_INPUTS)
     static_outputs = set(SIGNAL_LISTEN_STATIC_OUTPUTS)
     
+    # === 1. 计算当前图中实际出现的“非静态参数名”集合 ===
     present_param_names: set[str] = set()
     
     if node_title == SIGNAL_SEND_NODE_TITLE:
+        # 发送信号：关注非静态输入端口 + 常量键 + 入边端口名
         inputs_raw = node.get("inputs", []) or []
         input_names = extract_port_names(inputs_raw)
         constants_map = node.get("input_constants", {}) or {}
-        
-        for param_name in expected_param_names:
-            if param_name in static_inputs:
+
+        for name in input_names:
+            if name in static_inputs:
                 continue
-            # 1) 显式输入端口
-            if param_name in input_names:
-                present_param_names.add(param_name)
+            present_param_names.add(name)
+
+        for const_name in (constants_map.keys() if isinstance(constants_map, dict) else []):
+            if const_name in static_inputs:
                 continue
-            # 2) 存在针对该参数名的入边
-            incoming_key = (node_id, param_name)
-            if incoming_edges.get(incoming_key):
-                present_param_names.add(param_name)
+            present_param_names.add(str(const_name))
+
+        for (dst_node_id, dst_port_name), sources in incoming_edges.items():
+            if not sources:
                 continue
-            # 3) input_constants 中存在对应键
-            if param_name in constants_map:
-                present_param_names.add(param_name)
+            if dst_node_id != node_id:
                 continue
+            if dst_port_name in static_inputs:
+                continue
+            present_param_names.add(dst_port_name)
     else:
+        # 监听信号：关注非静态输出端口 + 出边端口名
         outputs_raw = node.get("outputs", []) or []
         output_names = extract_port_names(outputs_raw)
-        
-        for param_name in expected_param_names:
-            if param_name in static_outputs:
+
+        for name in output_names:
+            if name in static_outputs:
                 continue
-            # 1) 显式输出端口
-            if param_name in output_names:
-                present_param_names.add(param_name)
+            present_param_names.add(name)
+
+        for (src_node_id, src_port_name), targets in outgoing_edges.items():
+            if not targets:
                 continue
-            # 2) 存在从该参数端口发出的出边
-            src_key = (node_id, param_name)
-            if outgoing_edges.get(src_key):
-                present_param_names.add(param_name)
+            if src_node_id != node_id:
                 continue
+            if src_port_name in static_outputs:
+                continue
+            present_param_names.add(src_port_name)
     
-    missing = expected_param_names - present_param_names
-    extra = present_param_names - expected_param_names
+    # 期望的“信号参数名集合”本身不包含静态端口名，这里统一减去以防未来扩展。
+    expected_non_static = expected_param_names - static_inputs - static_outputs
+    
+    missing = expected_non_static - present_param_names
+    extra = present_param_names - expected_non_static
 
     if missing:
         node_detail = dict(detail)

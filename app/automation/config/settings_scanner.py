@@ -39,7 +39,12 @@ def execute_scan_settings(
     if allow_continue is not None and not allow_continue():
         executor.log("用户终止/暂停，放弃设置扫描", log_callback)
         return {}
-    screenshot = executor.capture_and_emit(label="设置扫描", overlays_builder=None, visual_callback=visual_callback)
+    screenshot = executor.capture_and_emit(
+        label="设置扫描",
+        overlays_builder=None,
+        visual_callback=visual_callback,
+        use_strict_window_capture=True,
+    )
     if not screenshot:
         executor.log("✗ 截图失败（设置扫描）", log_callback)
         return {}

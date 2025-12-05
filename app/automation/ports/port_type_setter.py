@@ -88,6 +88,7 @@ def _emit_expected_position_overlay(
         label=label,
         overlays_builder=_builder,
         visual_callback=visual_callback,
+        use_strict_window_capture=True,
     )
     executor.log(
         f"  · 已在监控画面标注期望位置：center=({int(editor_x)},{int(editor_y)}) ROI=({roi_left},{roi_top},{roi_width},{roi_height})",

@@ -172,6 +172,9 @@ class Settings:
     # ========== 真实执行 ==========
     # 真实执行调试日志（详细打印每一步识别、拖拽、验证信息）
     REAL_EXEC_VERBOSE: bool = False
+    # 是否在每个真实执行步骤完成后，尝试在节点图画布上点击一次空白位置作为收尾
+    # True：默认启用（推荐），可以关闭以完全保留旧行为并略微降低截图/识别开销
+    REAL_EXEC_CLICK_BLANK_AFTER_STEP: bool = True
     
     # 鼠标执行模式：
     # "classic"：直接移动并点击/拖拽（保持最终光标在目标位置）
@@ -327,6 +330,7 @@ class Settings:
         cls.TODO_MERGE_CONNECTION_STEPS = True
         cls.TODO_GRAPH_STEP_MODE = "human"
         cls.REAL_EXEC_VERBOSE = False
+        cls.REAL_EXEC_CLICK_BLANK_AFTER_STEP = True
         cls.MOUSE_EXECUTION_MODE = "classic"
         cls.MOUSE_HYBRID_STEPS = 40
         cls.MOUSE_HYBRID_STEP_SLEEP = 0.008

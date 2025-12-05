@@ -12,6 +12,7 @@ from .cache import set_enforce_graph_roi, reset_capture_state, enforce_graph_roi
 from .screen_capture import (
     capture_client_image,
     capture_window,
+    capture_window_strict,
     capture_full_screen,
     capture_region,
     capture_screen_region,
@@ -52,6 +53,7 @@ __all__ = [
     # 截图
     'capture_client_image',
     'capture_window',
+    'capture_window_strict',
     'capture_full_screen',
     'capture_region',
     'capture_screen_region',

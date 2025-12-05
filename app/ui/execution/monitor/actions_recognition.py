@@ -101,6 +101,31 @@ class RecognitionActions:
         self._get_workspace_path = get_workspace_path_callback
         self._get_window_title = get_window_title_callback
 
+    def test_window_capture_strict(self) -> None:
+        """仅窗口截图测试：使用 PrintWindow 尝试获取不受遮挡影响的窗口图像。"""
+        window_title = self._get_window_title()
+        title_text = str(window_title or "").strip()
+        if not title_text:
+            self._log("✗ 仅窗口截图测试失败：缺少窗口标题")
+            return
+
+        facade = AutomationFacade()
+        # 尝试聚焦目标窗口，便于确认句柄有效；PrintWindow 本身并不强制要求前台
+        facade.focus_editor(title_text)
+
+        screenshot = editor_capture.capture_window_strict(title_text)
+        if screenshot is None:
+            self._log("✗ 仅窗口截图测试失败：未找到目标窗口或 PrintWindow 不支持该窗口")
+            return
+
+        overlays = {
+            "rects": [],
+            "circles": [],
+            "header": "仅窗口截图（PrintWindow 实验性）",
+        }
+        self._update_visual(screenshot, overlays)
+        self._log("✓ 仅窗口截图测试完成：已在监控面板展示一帧基于 PrintWindow 的窗口图像")
+
     def check_current_page(self) -> None:
         """一次性执行：截图→识别（节点/端口）→叠加绘制→显示在面板，即使未开始监控也可显示。"""
         # 通过 Facade 截图，避免直接依赖内部实现

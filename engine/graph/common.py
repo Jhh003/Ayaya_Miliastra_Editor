@@ -368,7 +368,11 @@ SIGNAL_LISTEN_NODE_TITLE: str = "监听信号"
 # 统一的“信号名”端口名称常量，供各层复用，避免直接使用硬编码字符串。
 SIGNAL_NAME_PORT_NAME: str = "信号名"
 
-SIGNAL_SEND_STATIC_INPUTS: Tuple[str, ...] = ("流程入", "目标实体", SIGNAL_NAME_PORT_NAME)
+# 发送信号节点的静态输入端口：
+# - 流程入：流程控制入口；
+# - 信号名：用于选择具体信号定义的选择端口（仅支持常量/行内编辑，不参与连线）。
+# 其余输入端口一律视为“信号参数端口”，必须来源于对应信号定义的参数列表。
+SIGNAL_SEND_STATIC_INPUTS: Tuple[str, ...] = ("流程入", SIGNAL_NAME_PORT_NAME)
 SIGNAL_LISTEN_STATIC_OUTPUTS: Tuple[str, ...] = ("流程出", "事件源实体", "事件源GUID", "信号来源实体")
 
 

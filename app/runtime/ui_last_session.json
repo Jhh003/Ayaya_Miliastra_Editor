@@ -1,7 +1,25 @@
 {
+  "graph_editor": {
+    "graph_id": "server_forge_hero_player_teleport_01"
+  },
   "package_id": "global_view",
   "schema_version": 1,
   "selections": {
+    "combat": {
+      "context": {
+        "scope": "global",
+        "section_key": "player_template"
+      },
+      "id": "forge_hero_player_template_default",
+      "kind": "combat"
+    },
+    "graph_library": {
+      "context": {
+        "scope": "global"
+      },
+      "id": "server_forge_hero_player_teleport_01",
+      "kind": "graph"
+    },
     "management": {
       "context": {
         "scope": "global",
@@ -31,9 +49,17 @@
     }
   },
   "todo": {
-    "current_detail_info": null,
-    "current_todo_id": "",
-    "selected_todo_id": ""
+    "current_detail_info": {
+      "graph_data_key": "category:standalone_graphs:graph:server_forge_hero_player_teleport_01::server_forge_hero_player_teleport_01",
+      "graph_id": "server_forge_hero_player_teleport_01",
+      "graph_name": "锻刀英雄_玩家传送",
+      "instance_id": null,
+      "task_type": "instance",
+      "template_id": null,
+      "type": "template_graph_root"
+    },
+    "current_todo_id": "category:standalone_graphs:graph:server_forge_hero_player_teleport_01",
+    "selected_todo_id": "category:standalone_graphs:graph:server_forge_hero_player_teleport_01"
   },
-  "view_mode": "combat"
+  "view_mode": "todo"
 }

@@ -464,7 +464,9 @@ def _reinspect_ports_after_moving_cursor_outside_node(
         log_callback,
     )
 
-    retry_frame = editor_capture.capture_window(executor.window_title)
+    retry_frame = editor_capture.capture_window_strict(executor.window_title)
+    if retry_frame is None:
+        retry_frame = editor_capture.capture_window(executor.window_title)
     if not retry_frame:
         log("[端口定位] 鼠标移出节点后截图失败，放弃本次端口重试")
         return None, None

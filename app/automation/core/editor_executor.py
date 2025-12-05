@@ -430,13 +430,20 @@ class EditorExecutor:
         label: str = "",
         overlays_builder: Optional[Callable[[Image.Image], Optional[dict]]] = None,
         visual_callback: Optional[Callable[[Image.Image, Optional[dict]], None]] = None,
+        *,
+        use_strict_window_capture: bool = False,
     ) -> Image.Image:
         """一次性完成：窗口截图 → 叠加区域 → 推送到监控。
 
         规范：至少叠加"节点图布置区域"矩形；调用方可通过 overlays_builder 追加叠加内容。
         返回本次截图，以便调用方继续使用。
         """
-        screenshot = editor_capture.capture_window(self.window_title)
+        if use_strict_window_capture:
+            screenshot = editor_capture.capture_window_strict(self.window_title)
+            if screenshot is None:
+                screenshot = editor_capture.capture_window(self.window_title)
+        else:
+            screenshot = editor_capture.capture_window(self.window_title)
         if not screenshot:
             raise ValueError("截图失败")
 
@@ -665,7 +672,9 @@ class EditorExecutor:
         overlays: dict = {"rects": rect_items}
         if circle_items:
             overlays["circles"] = circle_items
-        screenshot = editor_capture.capture_window(self.window_title)
+        screenshot = editor_capture.capture_window_strict(self.window_title)
+        if screenshot is None:
+            screenshot = editor_capture.capture_window(self.window_title)
         if not screenshot:
             self._log("✗ 截图失败（创建节点调试可视化）", log_callback)
             return
@@ -781,7 +790,9 @@ class EditorExecutor:
             if allow_continue is not None and not allow_continue():
                 self._log("用户终止/暂停，放弃等待锚点", log_callback)
                 return None, []
-            screenshot = editor_capture.capture_window(self.window_title)
+            screenshot = editor_capture.capture_window_strict(self.window_title)
+            if screenshot is None:
+                screenshot = editor_capture.capture_window(self.window_title)
             if not screenshot:
                 self._log("  ✗ 窗口截图失败(视觉识别)", log_callback)
                 return None, []

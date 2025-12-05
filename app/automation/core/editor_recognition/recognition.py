@@ -55,7 +55,9 @@ ORIGIN_VOTING_MISSING_PENALTY: float = 0.5
 
 
 def prepare_for_connect(executor, log_callback=None) -> None:
-    screenshot = editor_capture.capture_window(executor.window_title)
+    screenshot = editor_capture.capture_window_strict(executor.window_title)
+    if screenshot is None:
+        screenshot = editor_capture.capture_window(executor.window_title)
     if screenshot:
         invalidate_cache()
         detected = list_nodes(screenshot)
@@ -1240,6 +1242,7 @@ def verify_and_update_view_mapping_by_recognition(
         label="识别-首帧",
         overlays_builder=build_graph_region_overlay,
         visual_callback=visual_callback,
+        use_strict_window_capture=True,
     )
     if not screenshot:
         executor.log("✗ 截图失败（识别校验）", log_callback)

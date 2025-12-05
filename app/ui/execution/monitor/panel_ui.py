@@ -40,6 +40,7 @@ def build_monitor_ui(parent: QtWidgets.QWidget) -> dict:
         - test_settings_tpl_button: 测试Settings模板按钮
         - test_add_button: 测试Add模板按钮
         - test_search_button: 测试搜索框模板按钮
+        - test_window_strict_button: 测试仅窗口截图按钮
         - drag_origin_label: 拖拽测试当前视口中心坐标标签
         - drag_target_x_input: 拖拽测试目标X输入框（程序坐标）
         - drag_target_y_input: 拖拽测试目标Y输入框（程序坐标）
@@ -146,7 +147,7 @@ def build_monitor_ui(parent: QtWidgets.QWidget) -> dict:
 
     layout.addLayout(test_row2)
 
-    # 扩展测试功能（第三行：模板类）
+    # 扩展测试功能（第三行：模板类 + 截图测试）
     test_row3 = QtWidgets.QHBoxLayout()
     test_settings_tpl_button = QtWidgets.QPushButton("测试Settings模板")
     test_settings_tpl_button.setToolTip("在节点图区域内匹配 Settings 按钮模板")
@@ -159,6 +160,12 @@ def build_monitor_ui(parent: QtWidgets.QWidget) -> dict:
     test_search_button = QtWidgets.QPushButton("测试搜索框模板")
     test_search_button.setToolTip("在窗口内匹配搜索框相关模板（search / search2）")
     test_row3.addWidget(test_search_button)
+
+    test_window_strict_button = QtWidgets.QPushButton("测试只截取程序")
+    test_window_strict_button.setToolTip(
+        "使用实验性的仅窗口截图方式（PrintWindow），在尽量避免遮挡的前提下抓取一帧并展示到监控面板"
+    )
+    test_row3.addWidget(test_window_strict_button)
 
     layout.addLayout(test_row3)
 
@@ -302,6 +309,7 @@ def build_monitor_ui(parent: QtWidgets.QWidget) -> dict:
         "test_settings_tpl_button": test_settings_tpl_button,
         "test_add_button": test_add_button,
         "test_search_button": test_search_button,
+        "test_window_strict_button": test_window_strict_button,
         "drag_origin_label": drag_origin_label,
         "drag_target_x_input": drag_target_x_input,
         "drag_target_y_input": drag_target_y_input,

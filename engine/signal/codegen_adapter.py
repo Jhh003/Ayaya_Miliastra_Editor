@@ -64,8 +64,8 @@ class SignalCodegenAdapter:
         约定：
         - 事件名 = signal_id（来自 GraphModel.metadata["signal_bindings"]），
           若未绑定则回退为“信号名”输入端常量/表达式；
-        - 目标实体来自“目标实体”输入端，缺省时回退为 self.owner_entity；
-        - 其余非静态输入端作为参数字典并入事件上下文。
+        - 目标实体固定为 self.owner_entity，不再通过独立输入端口指定；
+        - 其余非静态输入端（均视为信号参数端口）作为参数字典并入事件上下文。
         """
         lines: List[str] = []
 
@@ -75,7 +75,8 @@ class SignalCodegenAdapter:
         else:
             signal_id_expr = input_params.get(SIGNAL_NAME_PORT_NAME, '""')
 
-        target_entity_expr = input_params.get("目标实体", "self.owner_entity")
+        # 目标实体统一视为图所属实体（owner_entity），不通过独立端口指定。
+        target_entity_expr = "self.owner_entity"
 
         entries: List[str] = []
         static_inputs = set(SIGNAL_SEND_STATIC_INPUTS)

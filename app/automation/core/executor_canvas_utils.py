@@ -234,7 +234,9 @@ def snap_screen_point_to_canvas_background(
                 detected_nodes = nodes
 
     if screenshot is None:
-        screenshot = editor_capture.capture_window(executor.window_title)
+        screenshot = editor_capture.capture_window_strict(executor.window_title)
+        if screenshot is None:
+            screenshot = editor_capture.capture_window(executor.window_title)
     if screenshot is None:
         return None
 

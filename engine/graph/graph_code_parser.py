@@ -30,6 +30,8 @@ from engine.graph.utils.metadata_extractor import extract_metadata_from_code
 from engine.graph.utils.ast_utils import is_class_structure_format
 from engine.graph.utils.comment_extractor import extract_comments, associate_comments_to_nodes
 from engine.graph.code_to_graph_orchestrator import CodeToGraphParser
+from engine.graph.composite.param_usage_tracker import ParamUsageTracker
+from engine.graph.ir.ast_scanner import find_graph_class
 from engine.utils.name_utils import dedupe_preserve_order
 
 
@@ -284,6 +286,9 @@ class GraphCodeParser:
         # 4. 基于 register_handlers 中的注册调用，为【监听信号】事件节点补充信号绑定。
         self._apply_signal_bindings_from_register_handlers(tree, graph_model)
 
+        # 4.1 基于代码中的常量变量声明，为节点输入端口补充常量值（不走连线）。
+        self._apply_constant_bindings_from_code(tree, graph_model)
+
         # 5. 基于 docstring 中的结构体 ID 约定，为结构体相关节点补充默认结构体绑定。
         self._apply_struct_bindings_from_code(tree, graph_model)
         
@@ -300,6 +305,107 @@ class GraphCodeParser:
         
         return graph_model, metadata
     
+    def _apply_constant_bindings_from_code(
+        self,
+        tree: ast.Module,
+        graph_model: GraphModel,
+    ) -> None:
+        """从 Graph Code 中的常量变量声明推导节点输入常量。
+
+        约定：
+        - 支持形如 `变量名: "类型" = <常量>` 或 `变量名 = <常量>` 的简单常量变量；
+        - 常量变量仅在作为节点调用参数时生效：不再通过连线提供数据来源，
+          而是直接写入对应节点的 `input_constants[端口名]`。
+        """
+        if not isinstance(tree, ast.Module):
+            return
+
+        graph_class = find_graph_class(tree)
+        if graph_class is None:
+            return
+
+        all_nodes: List[NodeModel] = list(graph_model.nodes.values())
+        if not all_nodes:
+            return
+
+        # 收集模块顶层的简单常量声明（AnnAssign/Assign，右值为字面量），
+        # 例如：地点/配置等命名常量，供事件方法体内引用时回填到节点输入常量。
+        global_const_values: Dict[str, str] = {}
+        for top_stmt in tree.body:
+            if isinstance(top_stmt, ast.AnnAssign):
+                target = getattr(top_stmt, "target", None)
+                value = getattr(top_stmt, "value", None)
+                if isinstance(target, ast.Name) and isinstance(value, ast.Constant):
+                    name_text = target.id.strip()
+                    if name_text != "":
+                        global_const_values[name_text] = str(value.value)
+            elif isinstance(top_stmt, ast.Assign):
+                targets = list(getattr(top_stmt, "targets", []) or [])
+                value = getattr(top_stmt, "value", None)
+                if len(targets) == 1 and isinstance(targets[0], ast.Name) and isinstance(value, ast.Constant):
+                    name_text = targets[0].id.strip()
+                    if name_text != "":
+                        global_const_values[name_text] = str(value.value)
+
+        node_library = self.node_library
+        node_name_index = getattr(self._code_parser, "node_name_index", None)
+        if node_name_index is None:
+            from engine.graph.common import node_name_index_from_library
+
+            node_name_index = node_name_index_from_library(node_library)
+
+        for item in graph_class.body:
+            if not isinstance(item, ast.FunctionDef):
+                continue
+            if not item.name.startswith("on_"):
+                continue
+
+            stmts: List[ast.stmt] = list(item.body or [])
+            if not stmts:
+                continue
+
+            method_lineno = getattr(item, "lineno", 0) or 0
+            method_end_lineno = getattr(item, "end_lineno", method_lineno) or method_lineno
+            if not isinstance(method_lineno, int) or method_lineno <= 0:
+                continue
+            if not isinstance(method_end_lineno, int) or method_end_lineno < method_lineno:
+                method_end_lineno = method_lineno
+
+            method_nodes: List[NodeModel] = []
+            for node in all_nodes:
+                node_start = getattr(node, "source_lineno", 0) or 0
+                node_end = getattr(node, "source_end_lineno", node_start) or node_start
+                if not isinstance(node_start, int) or node_start <= 0:
+                    continue
+                if not isinstance(node_end, int) or node_end < node_start:
+                    node_end = node_start
+                if node_end < method_lineno or node_start > method_end_lineno:
+                    continue
+                method_nodes.append(node)
+
+            if not method_nodes:
+                continue
+
+            tracker = ParamUsageTracker(
+                param_names=[],
+                node_name_index=node_name_index,
+                node_library=node_library,
+                verbose=self.verbose,
+                state_attr_to_param=None,
+            )
+
+            # 预填充模块级命名常量，使其在调用参数中可被视为常量变量。
+            if global_const_values:
+                for var_name, const_val in global_const_values.items():
+                    if var_name not in tracker.const_var_values:
+                        tracker.const_var_values[var_name] = const_val
+
+            tracker.collect_constants(stmts)
+            if not tracker.const_var_values:
+                continue
+
+            tracker.backfill_constants_to_nodes(stmts, method_nodes)
+
     def _apply_signal_bindings_from_register_handlers(
         self,
         tree: ast.Module,

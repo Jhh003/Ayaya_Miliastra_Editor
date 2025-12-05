@@ -74,7 +74,9 @@ class GraphSceneSnapshot:
         ):
             return self._screenshot, self._detected_nodes
 
-        frame = editor_capture.capture_window(self._executor.window_title)
+        frame = editor_capture.capture_window_strict(self._executor.window_title)
+        if frame is None:
+            frame = editor_capture.capture_window(self._executor.window_title)
         if frame is None:
             raise ValueError("截图失败（GraphSceneSnapshot.ensure_frame）")
         detected = list_nodes(frame)
@@ -187,7 +189,9 @@ class NodePortsSnapshotCache:
                 ):
                     frame, detections = ensure_frame_method()
         if frame is None:
-            frame = editor_capture.capture_window(self._executor.window_title)
+            frame = editor_capture.capture_window_strict(self._executor.window_title)
+            if frame is None:
+                frame = editor_capture.capture_window(self._executor.window_title)
         if frame is None:
             self._log(f"✗ 截图失败（{reason}）")
             return False

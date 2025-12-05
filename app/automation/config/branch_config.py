@@ -111,7 +111,9 @@ def click_add_icon_within_node(
     )
 
     def _capture_and_match() -> tuple[Optional[Image.Image], Any]:
-        local_frame = editor_capture.capture_window(executor.window_title)
+        local_frame = editor_capture.capture_window_strict(executor.window_title)
+        if local_frame is None:
+            local_frame = editor_capture.capture_window(executor.window_title)
         if not local_frame:
             executor.log("✗ 截图失败（查找Add）", log_callback)
             return None, None
@@ -180,7 +182,9 @@ def execute_add_with_icon_clicks(
     invalidate_cache()
 
     def _capture_node_bbox() -> tuple[Optional[Image.Image], tuple[int, int, int, int]]:
-        screenshot = editor_capture.capture_window(executor.window_title)
+        screenshot = editor_capture.capture_window_strict(executor.window_title)
+        if screenshot is None:
+            screenshot = editor_capture.capture_window(executor.window_title)
         if not screenshot:
             executor.log("✗ 截图失败（Add 流程）", log_callback)
             return None, (0, 0, 0, 0)
@@ -303,7 +307,9 @@ def execute_config_branch_outputs(
         force_pan_if_inside_margin=False,
     )
     def _capture_node_context() -> tuple[Optional[Image.Image], tuple[int, int, int, int], List]:
-        screenshot = editor_capture.capture_window(executor.window_title)
+        screenshot = editor_capture.capture_window_strict(executor.window_title)
+        if screenshot is None:
+            screenshot = editor_capture.capture_window(executor.window_title)
         if not screenshot:
             executor.log("✗ 截图失败（分支输出配置）", log_callback)
             return None, (0, 0, 0, 0), []

@@ -58,7 +58,6 @@ class LayoutService:
         )
         collapse_duplicate_data_copies(working_model)
 
-        # 复用既有算法在副本上计算
         layout_by_event_regions(working_model)
 
         LayoutService._finalize_layout(

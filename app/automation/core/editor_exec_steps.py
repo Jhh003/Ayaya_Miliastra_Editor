@@ -15,6 +15,9 @@ from app.automation.core import editor_connect, editor_nodes
 from app.automation import capture as editor_capture
 from app.automation.input import win_input
 from app.automation.config.signal_config import execute_bind_signal
+from app.automation.core.ui_constants import NODE_VIEW_WIDTH_PX, NODE_VIEW_HEIGHT_PX
+from app.automation.core import executor_utils as _exec_utils
+from engine.configs.settings import settings
 from engine.graph.models.graph_model import GraphModel
 from . import editor_recognition as _rec
 
@@ -550,6 +553,103 @@ def _execute_step_within_graph_roi(
         return bool(result)
 
 
+def _click_canvas_blank_after_step(
+    executor,
+    todo_item: Dict[str, Any],
+    graph_model: GraphModel,
+    *,
+    step_type: str,
+    log_callback,
+    pause_hook: Optional[Callable[[], None]],
+    allow_continue: Optional[Callable[[], bool]],
+    visual_callback: Optional[Callable[[Image.Image, Optional[dict]], None]],
+) -> None:
+    """
+    统一的步骤收尾小流程：在目标节点上方附近点击一次画布空白位置。
+
+    设计要点：
+    - 仅在 REAL_EXEC_CLICK_BLANK_AFTER_STEP 开关启用且已建立坐标映射时生效；
+    - 优先使用当前步骤关联的节点（node_id / dst_node / src_node / node2_id / node1_id）推导起点；
+    - 起点选在“节点顶部上方、与节点水平居中对齐”的编辑器坐标，再委托画布吸附逻辑寻找安全空白点；
+    - 若无法解析到节点，则回退到最近一次上下文右键位置；若仍不可用则直接跳过。
+    """
+    if not getattr(settings, "REAL_EXEC_CLICK_BLANK_AFTER_STEP", True):
+        return
+
+    scale_ratio_value = getattr(executor, "scale_ratio", None)
+    if scale_ratio_value is None:
+        return
+
+    nodes_mapping = getattr(graph_model, "nodes", None)
+    if not isinstance(nodes_mapping, dict) or len(nodes_mapping) == 0:
+        return
+
+    primary_node_id_value = (
+        todo_item.get("node_id")
+        or todo_item.get("dst_node")
+        or todo_item.get("src_node")
+        or todo_item.get("node2_id")
+        or todo_item.get("node1_id")
+    )
+    primary_node_id = str(primary_node_id_value or "")
+
+    start_screen_x: Optional[int] = None
+    start_screen_y: Optional[int] = None
+
+    if primary_node_id and primary_node_id in nodes_mapping:
+        node_model = nodes_mapping[primary_node_id]
+        node_pos = getattr(node_model, "pos", None)
+        if isinstance(node_pos, (list, tuple)) and len(node_pos) >= 2:
+            program_x = float(node_pos[0])
+            program_y = float(node_pos[1])
+            editor_x, editor_y = executor.convert_program_to_editor_coords(program_x, program_y)
+
+            scale_value = float(scale_ratio_value) if abs(float(scale_ratio_value)) > 1e-6 else 1.0
+            node_width_editor = int(NODE_VIEW_WIDTH_PX * scale_value)
+            node_height_editor = int(NODE_VIEW_HEIGHT_PX * scale_value)
+
+            center_editor_x = int(editor_x) + int(node_width_editor // 2)
+            preferred_offset_pixels = int(min(node_height_editor * 0.8, 80.0))
+            if preferred_offset_pixels < 20:
+                preferred_offset_pixels = 20
+            above_editor_y = int(editor_y) - preferred_offset_pixels
+
+            screen_x, screen_y = executor.convert_editor_to_screen_coords(
+                int(center_editor_x),
+                int(above_editor_y),
+            )
+            start_screen_x = int(screen_x)
+            start_screen_y = int(screen_y)
+
+    if start_screen_x is None or start_screen_y is None:
+        get_last_context = getattr(executor, "get_last_context_click_editor_pos", None)
+        last_editor_pos = get_last_context() if callable(get_last_context) else None
+        if isinstance(last_editor_pos, tuple) and len(last_editor_pos) >= 2:
+            last_editor_x = int(last_editor_pos[0])
+            last_editor_y = int(last_editor_pos[1])
+            screen_x, screen_y = executor.convert_editor_to_screen_coords(
+                int(last_editor_x),
+                int(last_editor_y),
+            )
+            start_screen_x = int(screen_x)
+            start_screen_y = int(screen_y)
+        else:
+            return
+
+    _exec_utils.click_canvas_blank_near_screen_point(
+        executor,
+        int(start_screen_x),
+        int(start_screen_y),
+        log_prefix=f"[步骤收尾] {step_type} ",
+        wait_seconds=0.1,
+        wait_message="等待 0.10 秒（步骤收尾后画布状态稳定）",
+        log_callback=log_callback,
+        visual_callback=visual_callback,
+        pause_hook=pause_hook,
+        allow_continue=allow_continue,
+    )
+
+
 def execute_step(
     executor,
     todo_item: Dict[str, Any],
@@ -643,7 +743,7 @@ def execute_step(
                         plan,
                         log_callback,
                     )
-                    return _execute_step_within_graph_roi(
+                    result_connect = _execute_step_within_graph_roi(
                         executor,
                         step_type,
                         plan,
@@ -654,11 +754,33 @@ def execute_step(
                         allow_continue,
                         visual_callback,
                     )
+                    if result_connect:
+                        _click_canvas_blank_after_step(
+                            executor,
+                            todo_item,
+                            graph_model,
+                            step_type=step_type,
+                            log_callback=log_callback,
+                            pause_hook=pause_hook,
+                            allow_continue=allow_continue,
+                            visual_callback=visual_callback,
+                        )
+                    return bool(result_connect)
 
                 log_ok(
                     "core.automation.EditorExecutor.execute_step",
                     start_ms,
                     step=str(step_type or ""),
+                )
+                _click_canvas_blank_after_step(
+                    executor,
+                    todo_item,
+                    graph_model,
+                    step_type=step_type,
+                    log_callback=log_callback,
+                    pause_hook=pause_hook,
+                    allow_continue=allow_continue,
+                    visual_callback=visual_callback,
                 )
                 return True
 
@@ -683,7 +805,7 @@ def execute_step(
     )
 
     # 4. 在节点图 ROI 上下文中执行真正的步骤逻辑（包含连线预热与缓存处理）
-    return _execute_step_within_graph_roi(
+    result_step = _execute_step_within_graph_roi(
         executor,
         step_type,
         plan,
@@ -694,3 +816,15 @@ def execute_step(
         allow_continue,
         visual_callback,
     )
+    if result_step:
+        _click_canvas_blank_after_step(
+            executor,
+            todo_item,
+            graph_model,
+            step_type=step_type,
+            log_callback=log_callback,
+            pause_hook=pause_hook,
+            allow_continue=allow_continue,
+            visual_callback=visual_callback,
+        )
+    return bool(result_step)

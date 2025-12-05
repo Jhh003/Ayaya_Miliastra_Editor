@@ -30,7 +30,10 @@ class _DataCopySupport:
         self.context = context
         self.block_id = block_id
         self.node_copy_counter: Dict[str, int] = {}
+        # original_id -> copy_id（按“当前块视角下真正出现在连线里的节点 ID”建索引，用于重定向与链信息同步）
         self.copied_nodes: Dict[str, str] = {}
+        # canonical_original_id -> copy_id（按“根原始节点 ID”建索引，防止同一根节点在同一块被复制多次）
+        self._root_copy_ids: Dict[str, str] = {}
 
     def instruction_contains_forbidden_node(self, instruction: "ChainPlacementInfo") -> bool:
         candidate_ids = [instruction.start_data_id]
@@ -49,26 +52,36 @@ class _DataCopySupport:
             place_fn(upstream_id)
 
     def create_copy_if_needed(self, original_id: str) -> Optional[str]:
-        from ..utils.node_copy_utils import create_data_node_copy
+        from ..utils.node_copy_utils import create_data_node_copy, _resolve_canonical_original_id
 
-        if original_id in self.copied_nodes:
-            return self.copied_nodes[original_id]
-
-        original_node = self.context.model.nodes.get(original_id)
-        if not original_node:
+        node_obj = self.context.model.nodes.get(original_id)
+        if not node_obj:
             return None
-        if self._is_copy_forbidden_node(original_node):
+        if self._is_copy_forbidden_node(node_obj):
             return None
 
-        counter = self.node_copy_counter.get(original_id, 0) + 1
-        self.node_copy_counter[original_id] = counter
+        # 以“根原始节点 ID”作为跨块复制的语义标识，防止在已有副本基础上继续复制；
+        # 但 `copied_nodes` 仍按调用时看到的 original_id 建索引，保证重定向与链信息
+        # 始终以“真实出现在当前块连线中的节点 ID”作为 key。
+        canonical_original_id = _resolve_canonical_original_id(node_obj) or original_id
+
+        # 若同一根原始节点在本块内已创建过副本，则直接复用这一份，并为当前 original_id
+        # 建立映射（避免后续重定向遗漏这一 ID）。
+        existing_copy_id = self._root_copy_ids.get(canonical_original_id)
+        if existing_copy_id:
+            self.copied_nodes.setdefault(original_id, existing_copy_id)
+            return existing_copy_id
+
+        counter = self.node_copy_counter.get(canonical_original_id, 0) + 1
+        self.node_copy_counter[canonical_original_id] = counter
 
         copy_node = create_data_node_copy(
-            original_node,
+            node_obj,
             self.context.model,
             self.block_id,
             counter,
         )
+        self._root_copy_ids[canonical_original_id] = copy_node.id
         self.copied_nodes[original_id] = copy_node.id
         return copy_node.id
 

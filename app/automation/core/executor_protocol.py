@@ -310,7 +310,9 @@ class EditorExecutorProtocol(Protocol):
         self,
         label: str = "",
         overlays_builder: Optional[Callable[[Image.Image], Optional[dict]]] = None,
-        visual_callback: Optional[Callable[[Image.Image, Optional[dict]], None]] = None
+        visual_callback: Optional[Callable[[Image.Image, Optional[dict]], None]] = None,
+        *,
+        use_strict_window_capture: bool = False,
     ) -> Image.Image:
         """一次性完成：窗口截图 → 叠加区域 → 推送到监控
         

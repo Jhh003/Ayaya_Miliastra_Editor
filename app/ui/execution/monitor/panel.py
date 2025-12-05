@@ -197,6 +197,7 @@ class ExecutionMonitorPanel(QtWidgets.QWidget):
         self._ui_refs["test_settings_tpl_button"].clicked.connect(lambda: self._actions.test_settings_tpl())
         self._ui_refs["test_add_button"].clicked.connect(lambda: self._actions.test_add_templates())
         self._ui_refs["test_search_button"].clicked.connect(lambda: self._actions.test_searchbar_templates())
+        self._ui_refs["test_window_strict_button"].clicked.connect(self._on_test_window_strict_clicked)
 
         # 日志控制
         self._ui_refs["log_clear_button"].clicked.connect(self.clear_log)
@@ -212,6 +213,11 @@ class ExecutionMonitorPanel(QtWidgets.QWidget):
         if graph_model is None and self.get_current_graph_model and callable(self.get_current_graph_model):
             graph_model = self.get_current_graph_model()
         return graph_model
+
+    def _on_test_window_strict_clicked(self) -> None:
+        """仅窗口截图测试：点击后延时 2 秒再执行基于 PrintWindow 的截图。"""
+        self.log("仅窗口截图测试：2 秒后尝试使用 PrintWindow 抓取一帧（实验性，仅窗口截图）")
+        QtCore.QTimer.singleShot(2000, self._actions.test_window_capture_strict)
 
     def _on_focus_succeeded(self, visible_ids: list[str]) -> None:
         """定位镜头成功后发射信号并更新拖拽测试视口坐标显示"""

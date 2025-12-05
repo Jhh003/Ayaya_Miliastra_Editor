@@ -3,6 +3,9 @@
   "exclude": [
     "assets/资源库/节点图"
   ],
+  "ignore": [
+    "assets/资源库/节点图"
+  ],
   "executionEnvironments": [
     {
       "root": ".",

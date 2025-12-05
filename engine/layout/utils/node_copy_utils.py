@@ -11,6 +11,18 @@ from dataclasses import replace
 from engine.graph.models import GraphModel, NodeModel, PortModel
 
 
+def _resolve_canonical_original_id(node: NodeModel) -> str:
+    """
+    解析数据节点副本链的“根原始节点 ID”。
+
+    - 若节点本身已带有 original_node_id，则使用该字段；
+    - 否则根据命名约定去掉 `_copy_...` 后缀获得原始 ID。
+    """
+    if getattr(node, "original_node_id", ""):
+        return node.original_node_id
+    return _strip_copy_suffix(getattr(node, "id", ""))
+
+
 def create_data_node_copy(
     original_node: NodeModel,
     model: GraphModel,
@@ -21,29 +33,38 @@ def create_data_node_copy(
     创建数据节点的真实副本
     
     Args:
-        original_node: 原始节点
+        original_node: 作为复制来源的节点（可能本身就是副本）
         model: 图模型
         block_id: 块ID（如"block_2"）
-        copy_counter: 副本计数器（同一节点在不同块的副本序号）
+        copy_counter: 副本计数器（同一“根原始节点”在不同块的副本序号）
     
     Returns:
         副本节点对象
     """
-    # 生成副本ID
-    copy_id = f"{original_node.id}_copy_{block_id}_{copy_counter}"
+    # 统一以“根原始节点 ID”作为副本链的来源，避免在已有副本上继续叠加副本后缀。
+    canonical_original_id = _resolve_canonical_original_id(original_node)
+    source_node = original_node
+    if canonical_original_id and canonical_original_id in model.nodes:
+        source_node = model.nodes[canonical_original_id]
+
+    # 生成副本ID：始终以“根原始节点 ID + 块ID + 计数器”编码，防止出现
+    # `..._copy_block_2_1_copy_block_8_1` 这类多重嵌套后缀。
+    base_id = canonical_original_id or source_node.id
+    copy_id = f"{base_id}_copy_{block_id}_{copy_counter}"
 
     # 深拷贝节点
     copy_node = replace(
-        original_node,
+        source_node,
         id=copy_id,
         is_data_node_copy=True,
-        original_node_id=original_node.id,
+        # original_node_id 始终指向“根原始节点”，保证后续去重逻辑以根为键。
+        original_node_id=canonical_original_id or base_id,
         copy_block_id=block_id,
         # 深拷贝端口列表
-        inputs=[PortModel(name=port.name, is_input=True) for port in original_node.inputs],
-        outputs=[PortModel(name=port.name, is_input=False) for port in original_node.outputs],
+        inputs=[PortModel(name=port.name, is_input=True) for port in source_node.inputs],
+        outputs=[PortModel(name=port.name, is_input=False) for port in source_node.outputs],
         # 深拷贝常量
-        input_constants=dict(original_node.input_constants) if original_node.input_constants else {},
+        input_constants=dict(source_node.input_constants) if source_node.input_constants else {},
     )
 
     # 重建端口映射
@@ -335,7 +356,11 @@ def collapse_duplicate_data_copies(model: GraphModel) -> int:
         if not getattr(node, "is_data_node_copy", False):
             continue
 
-        original_id = node.original_node_id or _strip_copy_suffix(node.id)
+        # 以“根原始节点 ID + 副本所属块”作为去重键：
+        # - 对于历史数据或旧缓存，original_node_id 可能指向中间副本，此处统一回退到根；
+        # - 这样可以将 `node_x_copy_block_2_1` 与 `node_x_copy_block_2_1_copy_block_8_1`
+        #   之类链条统一视为同一原始节点的不同副本候选。
+        original_id = _resolve_canonical_original_id(node)
         copy_block_id = node.copy_block_id or _infer_copy_block_id_from_node_id(node.id)
         if not original_id or not copy_block_id:
             continue

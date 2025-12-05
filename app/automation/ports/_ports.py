@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional, Tuple, Literal
 
 from engine.utils.graph.graph_utils import is_flow_port_name
+from engine.graph.common import SIGNAL_NAME_PORT_NAME, STRUCT_NAME_PORT_NAME
 
 
 PortKind = Literal["flow", "data", "settings", "select", "warning", "other"]
@@ -81,6 +82,10 @@ def is_data_input_port(port_obj) -> bool:
     if normalize_kind_text(kind_text) == 'flow':
         return False
     name_text = str(getattr(port_obj, 'name_cn', '') or '')
+    # 选择端口（如“信号名”“结构体名”）在 UI 中以行内选择控件呈现，
+    # 不应参与“可连接/可配置的数据端口”集合，统一在此处排除。
+    if name_text in (SIGNAL_NAME_PORT_NAME, STRUCT_NAME_PORT_NAME):
+        return False
     if is_flow_port_name(name_text):
         return False
     return True
