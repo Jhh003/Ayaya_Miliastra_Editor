@@ -15,6 +15,7 @@ from __future__ import annotations
 from .definition_repository import (  # noqa: F401
     SignalDefinitionRepository,
     get_default_signal_repository,
+    invalidate_default_signal_repository_cache,
 )
 from .binding_service import (  # noqa: F401
     SignalBindingService,

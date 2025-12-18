@@ -5,6 +5,7 @@
 """
 
 from typing import Optional
+from contextlib import contextmanager
 
 from PIL import Image
 from app.automation import capture as editor_capture
@@ -26,6 +27,22 @@ _SUPPRESSION_REASON_LABELS = {
     "containment": "包含关系",
     "center_overlap": "中心接近",
 }
+
+
+@contextmanager
+def _temporary_global_sinks(update_visual_callback, log_callback):
+    """临时将监控面板注册为全局可视化/日志汇聚器，并确保最终清理。
+
+    说明：部分底层 OCR/模板匹配工具会通过全局 sink 推送叠加画面与日志。
+    若中途抛异常未清理，会导致后续监控输出串台，因此必须保证 finally 清理。
+    """
+    _set_visual_sink(update_visual_callback)
+    _set_log_sink(log_callback)
+    try:
+        yield
+    finally:
+        _clear_visual_sink()
+        _clear_log_sink()
 
 
 def _is_overlapped_same_template_suppressed_nms(
@@ -219,18 +236,15 @@ class RecognitionActions:
             self._log("✗ OCR 测试失败：未找到目标窗口")
             return
         rx, ry, rw, rh = editor_capture.get_region_rect(screenshot, "顶部标签栏")
-        # 将监控面板注册为全局可视化与日志汇聚器（调用后清理）
-        _set_visual_sink(self._update_visual)
-        _set_log_sink(self._log)
-        text_result = editor_capture.ocr_recognize_region(
-            screenshot,
-            (int(rx), int(ry), int(rw), int(rh)),
-            return_details=False,
-        )
+        # 将监控面板注册为全局可视化与日志汇聚器（确保最终清理）
+        with _temporary_global_sinks(self._update_visual, self._log):
+            text_result = editor_capture.ocr_recognize_region(
+                screenshot,
+                (int(rx), int(ry), int(rw), int(rh)),
+                return_details=False,
+            )
         preview_source = text_result[0] if isinstance(text_result, tuple) else text_result
         preview = str(preview_source or "").strip()
-        _clear_visual_sink()
-        _clear_log_sink()
         if preview:
             self._log(f"✓ OCR 测试完成：'{preview}'")
         else:
@@ -300,16 +314,13 @@ class RecognitionActions:
             self._log("✗ Warning 测试失败：未找到目标窗口")
             return
         region_x, region_y, region_w, region_h = editor_capture.get_region_rect(screenshot, "节点图布置区域")
-        # 使用模板匹配并将可视化与日志汇聚至本面板
-        _set_visual_sink(self._update_visual)
-        _set_log_sink(self._log)
-        _ = editor_capture.match_template(
-            screenshot,
-            str(executor.node_warning_template_path),
-            search_region=(int(region_x), int(region_y), int(region_w), int(region_h)),
-        )
-        _clear_visual_sink()
-        _clear_log_sink()
+        # 使用模板匹配并将可视化与日志汇聚至本面板（确保最终清理）
+        with _temporary_global_sinks(self._update_visual, self._log):
+            _ = editor_capture.match_template(
+                screenshot,
+                str(executor.node_warning_template_path),
+                search_region=(int(region_x), int(region_y), int(region_w), int(region_h)),
+            )
         self._log("✓ Warning 模板匹配测试完成（详见叠加画面与日志）")
 
     def test_ocr_zoom(self) -> None:
@@ -320,18 +331,15 @@ class RecognitionActions:
             self._log("✗ OCR 缩放测试失败：未找到目标窗口")
             return
         rx, ry, rw, rh = editor_capture.get_region_rect(screenshot, "节点图缩放区域")
-        _set_visual_sink(self._update_visual)
-        _set_log_sink(self._log)
-        text_result = editor_capture.ocr_recognize_region(
-            screenshot,
-            (int(rx), int(ry), int(rw), int(rh)),
-            return_details=False,
-            exclude_top_pixels=0,
-        )
+        with _temporary_global_sinks(self._update_visual, self._log):
+            text_result = editor_capture.ocr_recognize_region(
+                screenshot,
+                (int(rx), int(ry), int(rw), int(rh)),
+                return_details=False,
+                exclude_top_pixels=0,
+            )
         preview_source = text_result[0] if isinstance(text_result, tuple) else text_result
         preview = str(preview_source or "").strip()
-        _clear_visual_sink()
-        _clear_log_sink()
         self._log(f"✓ OCR 缩放测试完成：'{preview}'")
 
     def test_nodes(self) -> None:
@@ -687,11 +695,12 @@ class RecognitionActions:
             self._log("✗ Settings模板测试失败：未找到目标窗口")
             return
         rx, ry, rw, rh = editor_capture.get_region_rect(screenshot, "节点图布置区域")
-        _set_visual_sink(self._update_visual)
-        _set_log_sink(self._log)
-        _ = editor_capture.match_template(screenshot, str(executor.node_settings_template_path), search_region=(int(rx), int(ry), int(rw), int(rh)))
-        _clear_visual_sink()
-        _clear_log_sink()
+        with _temporary_global_sinks(self._update_visual, self._log):
+            _ = editor_capture.match_template(
+                screenshot,
+                str(executor.node_settings_template_path),
+                search_region=(int(rx), int(ry), int(rw), int(rh)),
+            )
         self._log("✓ Settings 模板匹配测试完成")
 
     def test_add_templates(self) -> None:
@@ -707,12 +716,17 @@ class RecognitionActions:
             self._log("✗ Add模板测试失败：未找到目标窗口")
             return
         rx, ry, rw, rh = editor_capture.get_region_rect(screenshot, "节点图布置区域")
-        _set_visual_sink(self._update_visual)
-        _set_log_sink(self._log)
-        _ = editor_capture.match_template(screenshot, str(executor.node_add_template_path), search_region=(int(rx), int(ry), int(rw), int(rh)))
-        _ = editor_capture.match_template(screenshot, str(executor.node_add_multi_template_path), search_region=(int(rx), int(ry), int(rw), int(rh)))
-        _clear_visual_sink()
-        _clear_log_sink()
+        with _temporary_global_sinks(self._update_visual, self._log):
+            _ = editor_capture.match_template(
+                screenshot,
+                str(executor.node_add_template_path),
+                search_region=(int(rx), int(ry), int(rw), int(rh)),
+            )
+            _ = editor_capture.match_template(
+                screenshot,
+                str(executor.node_add_multi_template_path),
+                search_region=(int(rx), int(ry), int(rw), int(rh)),
+            )
         self._log("✓ Add 模板匹配测试完成")
 
     def test_searchbar_templates(self) -> None:
@@ -727,11 +741,16 @@ class RecognitionActions:
         if not screenshot:
             self._log("✗ 搜索框模板测试失败：未找到目标窗口")
             return
-        _set_visual_sink(self._update_visual)
-        _set_log_sink(self._log)
-        _ = editor_capture.match_template(screenshot, str(executor.search_bar_template_path), search_region=None)
-        _ = editor_capture.match_template(screenshot, str(executor.search_bar_template_path2), search_region=None)
-        _clear_visual_sink()
-        _clear_log_sink()
+        with _temporary_global_sinks(self._update_visual, self._log):
+            _ = editor_capture.match_template(
+                screenshot,
+                str(executor.search_bar_template_path),
+                search_region=None,
+            )
+            _ = editor_capture.match_template(
+                screenshot,
+                str(executor.search_bar_template_path2),
+                search_region=None,
+            )
         self._log("✓ 搜索框模板匹配测试完成")
 

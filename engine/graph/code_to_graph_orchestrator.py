@@ -36,6 +36,7 @@ from engine.graph.utils.ast_utils import (
     clear_module_constants_context,
 )
 from engine.graph.common import SIGNAL_LISTEN_NODE_TITLE, SIGNAL_NAME_PORT_NAME
+from engine.graph.semantic import GraphSemanticPass, SEMANTIC_SIGNAL_ID_CONSTANT_KEY
 from importlib import import_module
 
 
@@ -112,42 +113,11 @@ class CodeToGraphParser:
         # register_handlers 信号绑定映射：method_base_name -> literal
         handler_literal_by_method = ir_scan_register_handlers_bindings(class_def)
 
-        # 结构体索引：用于结构体节点绑定推导（一次构建，多处复用）
-        if self._factory_ctx.struct_name_to_id is None or self._factory_ctx.struct_fields_by_id is None:
-            from engine.resources.definition_schema_view import get_default_definition_schema_view
-
-            schema_view = get_default_definition_schema_view()
-            all_structs = schema_view.get_all_struct_definitions() or {}
-            struct_name_to_id: Dict[str, str] = {}
-            struct_fields_by_id: Dict[str, List[str]] = {}
-            for struct_id, payload in all_structs.items():
-                if not isinstance(struct_id, str) or not isinstance(payload, dict):
-                    continue
-                name_raw = payload.get("name")
-                struct_name = str(name_raw).strip() if isinstance(name_raw, str) else ""
-                if struct_name:
-                    struct_name_to_id[struct_name] = struct_id
-                struct_name_to_id[struct_id] = struct_id
-                defined_fields: List[str] = []
-                value_entries = payload.get("value")
-                if isinstance(value_entries, list):
-                    for entry in value_entries:
-                        if not isinstance(entry, dict):
-                            continue
-                        raw_key = entry.get("key")
-                        field_name = str(raw_key).strip() if isinstance(raw_key, str) else ""
-                        if field_name and field_name not in defined_fields:
-                            defined_fields.append(field_name)
-                struct_fields_by_id[struct_id] = defined_fields
-
-            self._factory_ctx.struct_name_to_id = struct_name_to_id
-            self._factory_ctx.struct_fields_by_id = struct_fields_by_id
-
-        # 信号仓库：供事件节点与发送信号节点推导稳定 signal_id
-        if self._factory_ctx.signal_repo is None:
-            signal_module = import_module("engine.signal")
-            get_repo = getattr(signal_module, "get_default_signal_repository")
-            self._factory_ctx.signal_repo = get_repo()
+        # 信号仓库：用于识别 register_handlers 是否绑定到已定义信号，
+        # 从而将对应事件节点表现为【监听信号】（不写入 signal_bindings）。
+        signal_module = import_module("engine.signal")
+        get_repo = getattr(signal_module, "get_default_signal_repository")
+        signal_repo = get_repo()
 
         for event_ir in ir_scan_event_methods(class_def):
             event_name = event_ir.name
@@ -164,19 +134,18 @@ class CodeToGraphParser:
             event_node.source_end_lineno = getattr(method, "end_lineno", getattr(method, "lineno", 0))
 
             # 下沉信号事件推导：若 register_handlers 里将该 on_<method> 绑定到了已定义信号，
-            # 则将事件节点表现为【监听信号】并写入 signal_bindings。
+            # 则将事件节点表现为【监听信号】并写入节点常量（由 GraphSemanticPass 统一生成 signal_bindings）。
             literal = handler_literal_by_method.get(event_name)
             if isinstance(literal, str) and literal.strip():
-                repo = self._factory_ctx.signal_repo
                 resolved_id = str(literal).strip()
                 resolved_payload: Any = None
-                if repo is not None:
-                    resolved_payload = repo.get_payload(resolved_id)
+                if signal_repo is not None:
+                    resolved_payload = signal_repo.get_payload(resolved_id)
                     if not (isinstance(resolved_payload, dict) and resolved_payload):
-                        resolved_by_name = repo.resolve_id_by_name(resolved_id)
+                        resolved_by_name = signal_repo.resolve_id_by_name(resolved_id)
                         if resolved_by_name:
                             resolved_id = str(resolved_by_name)
-                            resolved_payload = repo.get_payload(resolved_id)
+                            resolved_payload = signal_repo.get_payload(resolved_id)
                 if isinstance(resolved_payload, dict) and resolved_payload:
                     event_node.title = SIGNAL_LISTEN_NODE_TITLE
                     # 确保存在“信号名”输入端口（事件节点可能没有输入端口）
@@ -185,8 +154,8 @@ class CodeToGraphParser:
                         event_node.inputs.append(PortModel(name=SIGNAL_NAME_PORT_NAME, is_input=True))
                     display_name = str(resolved_payload.get("signal_name") or "").strip()
                     event_node.input_constants.setdefault(SIGNAL_NAME_PORT_NAME, display_name or literal)
-                    if not graph_model.get_node_signal_id(event_node.id):
-                        graph_model.set_node_signal_binding(event_node.id, resolved_id)
+                    # 回填稳定 ID（隐藏常量），供 GraphSemanticPass 生成 metadata["signal_bindings"]
+                    event_node.input_constants[SEMANTIC_SIGNAL_ID_CONSTANT_KEY] = str(resolved_id)
 
             graph_model.event_flow_order.append(event_node.id)
             graph_model.event_flow_titles.append(event_node.title)
@@ -202,6 +171,9 @@ class CodeToGraphParser:
                 graph_model.nodes[n.id] = n
             for e in edges:
                 graph_model.edges[e.id] = e
+
+        # 语义元数据统一在此阶段生成（单点写入）
+        GraphSemanticPass.apply(graph_model)
 
         # 布局（调用点保持不变）
         apply_layout_quietly(graph_model)

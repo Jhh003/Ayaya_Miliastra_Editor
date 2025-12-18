@@ -52,6 +52,19 @@ class CompositeNodePreviewController(QtCore.QObject):
         self._commit_changes(refresh_panel=False)
         return True, None
 
+    def update_pin_type(self, pin: VirtualPinConfig, new_type: str) -> Tuple[bool, Optional[str]]:
+        if not self.composite_config:
+            return False, "暂无复合节点"
+        type_text = str(new_type or "").strip()
+        if not type_text:
+            return False, "引脚类型不能为空"
+        # UI 不提供“泛型”可选项；若外部误传入占位，仍按规则拒绝
+        if type_text in {"泛型", "列表", "泛型列表", "泛型字典"}:
+            return False, "泛型仅作为未设置占位，不允许保存为引脚类型"
+        pin.pin_type = type_text
+        self._commit_changes(refresh_panel=True)
+        return True, None
+
     def _handle_pin_deleted(self, pin: VirtualPinConfig) -> None:
         if not self.composite_config:
             return
@@ -82,8 +95,8 @@ class CompositeNodePreviewController(QtCore.QObject):
             # 复合节点管理页面默认以逻辑只读方式工作：
             # - 允许在预览中合并/删除/重命名虚拟引脚
             # - 仅更新当前进程内的 CompositeNodeConfig，不写回函数文件
-            is_read_only = getattr(self.composite_widget, "composite_logic_read_only", False)
-            if not is_read_only:
+            can_persist = bool(getattr(self.composite_widget, "can_persist_composite", False))
+            if can_persist:
                 self.composite_widget.manager.update_composite_node(
                     self.composite_config.composite_id,
                     self.composite_config,

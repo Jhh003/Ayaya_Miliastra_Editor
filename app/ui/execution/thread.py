@@ -151,6 +151,12 @@ class ExecutionThread(QtCore.QThread):
             self.executor.fast_chain_mode = True
             self.monitor.log("⚡ 快速链模式：跳过连接/参数步骤的缓冲等待")
         
+        # 新一轮执行：清空“已创建节点 tracking”，避免跨轮残留影响创建锚点选择。
+        # 注意：这里不重置坐标映射（scale_ratio/origin_node_pos），仅清空创建顺序记录。
+        reset_created_tracking = getattr(self.executor, "reset_created_node_tracking", None)
+        if callable(reset_created_tracking):
+            reset_created_tracking(self.monitor.log)
+        
         try:
             # 阶段2: 选择锚点
             anchor_info = self.anchor_selector.select_anchor(self.steps)
@@ -282,58 +288,74 @@ class ExecutionThread(QtCore.QThread):
             
             # 执行步骤
             success, last_issue = self._execute_single_step(step_info)
-            
-            # 成功时更新锚点
+
+            summary_text = self.summary_builder.build_summary(step_info)
+
+            # 成功：只回填一次 step_completed（语义：最终结果）
             if success:
                 self.retry_handler.update_anchor_after_success(step_info)
-            
-            # 输出摘要（首轮执行的结果说明）
-            summary_text = self.summary_builder.build_summary(step_info)
-            if success:
                 self.monitor.log(f"✓ 步骤执行成功：{summary_text}")
-            else:
-                reason_txt = last_issue if last_issue else "未提供原因（请查看上方详细日志）"
-                self.monitor.log(f"✗ 步骤执行失败：{summary_text}｜原因：{reason_txt}")
-            
-            # 首次执行结果回填给外层（包括失败态）
-            self.step_completed.emit(step_todo.todo_id, success)
-            
-            # 失败时按统一上限尝试回退重试：所有步骤最多自动再跑 N 次
-            if not success:
-                max_retry = self._get_max_step_retry_limit()
-                retry_success = False
-                # 统一使用相同的“自动再跑次数”上限，避免有的步骤多次重试、有的只重试一次
-                for _ in range(max(0, max_retry)):
-                    retry_result = self.retry_handler.try_retry_with_anchor_fallback(
-                        step_info,
-                        step_todo.todo_id,
-                        self.step_completed,
-                    )
-                    if retry_result.success:
-                        retry_success = True
-                        break
-                    # 若当前环境根本无法回退重试（无锚点等），无需空转后续循环
-                    if not retry_result.did_retry:
-                        break
-                if retry_success:
-                    continue
-                # 若在统一次数上限内仍未成功：
-                # - 对创建类步骤视为致命失败，终止本轮执行；
-                # - 对非创建类步骤视为“已尽力但无法完成”，标记为跳过并继续后续步骤。
-                is_create_step = step_type in (
-                    "graph_create_node",
-                    "graph_create_and_connect",
-                    "graph_create_and_connect_data",
+                self.step_completed.emit(step_todo.todo_id, True)
+                continue
+
+            # 失败：先尝试按上限回退重试（不在重试过程中回填 step_completed，避免 UI/监控计数错乱）
+            reason_txt = last_issue if last_issue else "未提供原因（请查看上方详细日志）"
+            max_retry = self._get_max_step_retry_limit()
+            if max_retry > 0:
+                self.monitor.log(
+                    f"⚠ 步骤首次执行失败，将尝试回退重试（最多 {max_retry} 次）：{summary_text}｜原因：{reason_txt}"
                 )
-                if not is_create_step:
-                    skip_reason = last_issue if last_issue else "该步骤多次尝试仍未成功，已跳过"
-                    self.monitor.log(
-                        f"⚠ 步骤多次尝试仍未成功，将跳过本步骤继续执行：{summary_text}｜原因：{skip_reason}"
-                    )
-                    self.step_skipped.emit(step_todo.todo_id, skip_reason)
-                    continue
-                self.monitor.update_status("执行失败")
-                break
+
+            retry_success = False
+            retry_attempted_count = 0
+            for _ in range(max(0, max_retry)):
+                retry_result = self.retry_handler.try_retry_with_anchor_fallback(step_info, step_todo.todo_id)
+                if retry_result.did_retry:
+                    retry_attempted_count += 1
+                if retry_result.success:
+                    retry_success = True
+                    break
+                # 若当前环境根本无法回退重试（无锚点等），无需空转后续循环
+                if not retry_result.did_retry:
+                    break
+
+            if retry_success:
+                self.retry_handler.update_anchor_after_success(step_info)
+                if retry_attempted_count > 0:
+                    self.monitor.log(f"✓ 步骤回退重试成功（重试 {retry_attempted_count} 次）：{summary_text}")
+                else:
+                    self.monitor.log(f"✓ 步骤执行成功：{summary_text}")
+                self.step_completed.emit(step_todo.todo_id, True)
+                continue
+
+            # 若在统一次数上限内仍未成功：
+            # - 对创建类步骤视为致命失败，终止本轮执行；
+            # - 对非创建类步骤视为“已尽力但无法完成”，标记为跳过并继续后续步骤。
+            is_create_step = step_type in (
+                "graph_create_node",
+                "graph_create_and_connect",
+                "graph_create_and_connect_data",
+            )
+            if not is_create_step:
+                skip_reason = last_issue if last_issue else "该步骤执行未成功，已跳过"
+                attempt_info = (
+                    f"回退重试 {retry_attempted_count} 次仍未成功"
+                    if retry_attempted_count > 0
+                    else "执行未成功（未进行回退重试）"
+                )
+                self.monitor.log(f"⚠ 步骤{attempt_info}，将跳过本步骤继续执行：{summary_text}｜原因：{skip_reason}")
+                self.step_skipped.emit(step_todo.todo_id, skip_reason)
+                continue
+
+            if retry_attempted_count > 0:
+                self.monitor.log(
+                    f"✗ 步骤执行失败（回退重试 {retry_attempted_count} 次仍未成功）：{summary_text}｜原因：{reason_txt}"
+                )
+            else:
+                self.monitor.log(f"✗ 步骤执行失败：{summary_text}｜原因：{reason_txt}")
+            self.step_completed.emit(step_todo.todo_id, False)
+            self.monitor.update_status("执行失败")
+            break
         else:
             # 正常完成所有步骤
             self.monitor.update_status("执行完成")

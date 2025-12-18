@@ -8,33 +8,44 @@
 from typing import Optional, Any, Dict
 from engine.utils.graph.graph_utils import is_flow_port_name as is_flow_port_by_name
 
+from engine.type_registry import (
+    TYPE_CAMP,
+    TYPE_CONFIG_ID,
+    TYPE_COMPONENT_ID,
+    TYPE_ENTITY,
+    TYPE_FLOW,
+    TYPE_GENERIC,
+    TYPE_GENERIC_DICT,
+    TYPE_GENERIC_LIST,
+    TYPE_GUID,
+    TYPE_INTEGER,
+    TYPE_FLOAT,
+    TYPE_BOOLEAN,
+    TYPE_STRING,
+    TYPE_VECTOR3,
+    is_dict_type_name,
+    is_list_type_name,
+)
+
 
 # 流程端口特殊类型
-FLOW_PORT_TYPE = "流程"
+FLOW_PORT_TYPE = TYPE_FLOW
 
 # 常见数据端口类型常量（统一集中定义）
-ANY_PORT_TYPE = "泛型"
-GENERIC_PORT_TYPE = "泛型"
+ANY_PORT_TYPE = TYPE_GENERIC
+GENERIC_PORT_TYPE = TYPE_GENERIC
 # 兼容不同术语的布尔类型关键字集合（用于检索/统计等弱语义场景）
 BOOLEAN_TYPE_KEYWORDS = ("布尔", "布尔值")
 
 
 def _is_dict_type(port_type: str) -> bool:
     """判断是否为字典类型（包括别名字典：以“字典”结尾的类型名）。"""
-    text = str(port_type or "").strip()
-    if not text:
-        return False
-    if text == "字典":
-        return True
-    return text.endswith("字典")
+    return is_dict_type_name(port_type)
 
 
 def _is_list_type(port_type: str) -> bool:
     """判断是否为列表类型（任何以“列表”结尾的类型名）。"""
-    text = str(port_type or "").strip()
-    if not text:
-        return False
-    return text.endswith("列表")
+    return is_list_type_name(port_type)
 
 
 def can_connect_ports(src_type: str, dst_type: str) -> bool:
@@ -62,13 +73,13 @@ def can_connect_ports(src_type: str, dst_type: str) -> bool:
         return src == dst
 
     # 泛型字典：只接受任意“字典类型”（包括别名字典）
-    if src == "泛型字典" or dst == "泛型字典":
-        other = dst if src == "泛型字典" else src
+    if src == TYPE_GENERIC_DICT or dst == TYPE_GENERIC_DICT:
+        other = dst if src == TYPE_GENERIC_DICT else src
         return _is_dict_type(other)
 
     # 泛型列表：只接受任意“列表类型”
-    if src == "泛型列表" or dst == "泛型列表":
-        other = dst if src == "泛型列表" else src
+    if src == TYPE_GENERIC_LIST or dst == TYPE_GENERIC_LIST:
+        other = dst if src == TYPE_GENERIC_LIST else src
         return _is_list_type(other)
 
     # 泛型类型可以接受任何类型
@@ -97,21 +108,22 @@ def get_port_type_color(port_type: str) -> str:
     """
     type_colors = {
         FLOW_PORT_TYPE: "#FFD700",  # 金黄色（流程）
-        "实体": "#FF6B6B",  # 红色
-        "GUID": "#FFA500",  # 橙色
-        "整数": "#4ECDC4",  # 青色
-        "浮点数": "#45B7D1",  # 蓝色
-        "布尔值": "#A8E6CF",  # 绿色
-        "字符串": "#FFD93D",  # 黄色
-        "三维向量": "#C77DFF",  # 紫色
-        "配置ID": "#F08A5D",  # 橘红
-        "元件ID": "#B8336A",  # 洋红
-        "泛型": "#95A5A6",  # 灰色
+        TYPE_CAMP: "#6BCB77",  # 草绿色（阵营）
+        TYPE_ENTITY: "#FF6B6B",  # 红色
+        TYPE_GUID: "#FFA500",  # 橙色
+        TYPE_INTEGER: "#4ECDC4",  # 青色
+        TYPE_FLOAT: "#45B7D1",  # 蓝色
+        TYPE_BOOLEAN: "#A8E6CF",  # 绿色
+        TYPE_STRING: "#FFD93D",  # 黄色
+        TYPE_VECTOR3: "#C77DFF",  # 紫色
+        TYPE_CONFIG_ID: "#F08A5D",  # 橘红
+        TYPE_COMPONENT_ID: "#B8336A",  # 洋红
+        TYPE_GENERIC: "#95A5A6",  # 灰色
     }
     
     # 列表类型使用基础类型的颜色但更浅
-    if "列表" in port_type:
-        base_type = port_type.replace("列表", "")
+    if port_type.endswith("列表"):
+        base_type = port_type[: -len("列表")]
         if base_type in type_colors:
             return type_colors[base_type]
     

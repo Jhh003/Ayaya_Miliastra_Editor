@@ -1,8 +1,12 @@
-"""主窗口的“单一真源”状态对象（AppState）。
+"""主窗口的共享状态对象（AppState）。
 
 目标：
-- 将启动期的“装配结果”（workspace / library / resource_manager / graph view 体系等）集中到明确对象中；
-- 主窗口仍保留旧的 `self.*` 属性作为兼容别名，便于 Mixin 体系逐步迁移。
+- 将启动期的稳定依赖（workspace / 节点库 / ResourceManager / PackageIndexManager / GraphView）集中到明确对象中；
+- 避免在主窗口上保留 `self.*` 的兼容别名，减少跨域逻辑对隐式约定的依赖。
+
+约定：
+- **动态的** GraphModel/GraphScene 由 `GraphEditorController` 管理（加载图时会重建模型与场景），
+  因此 AppState 不持有 `graph_model/graph_scene`，以避免出现“陈旧副本”。
 """
 
 from __future__ import annotations
@@ -30,11 +34,9 @@ class MainWindowAppState:
     """主窗口启动期装配得到的稳定依赖集合（单一真源）。"""
 
     workspace_path: Path
-    node_library: object
+    node_library: dict
     resource_manager: ResourceManager
     package_index_manager: PackageIndexManager
-    graph_model: GraphModel
-    graph_scene: GraphScene
     graph_view: GraphView
 
 
@@ -76,8 +78,6 @@ def build_main_window_app_state(workspace_path: Path) -> MainWindowAppState:
         node_library=node_library,
         resource_manager=resource_manager,
         package_index_manager=package_index_manager,
-        graph_model=graph_model,
-        graph_scene=graph_scene,
         graph_view=graph_view,
     )
 

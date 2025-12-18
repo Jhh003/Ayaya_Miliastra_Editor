@@ -21,11 +21,8 @@ class GraphLibraryModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> str:
         _ = request
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
 
-        main_window.graph_library_widget.refresh()
+        main_window.graph_library_widget.reload()
 
         def _sync_graph_library_selection() -> None:
             selected_graph_id = main_window.graph_library_widget.get_selected_graph_id()
@@ -53,14 +50,37 @@ class GraphEditorModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> str:
         _ = request
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
+
+        # GRAPH_EDITOR 使用全局唯一的 GraphView，但中央堆叠页是 Host 容器：
+        # 若画布之前被 TODO 预览“借用”到了任务清单页面，需要在进入编辑器时归还。
+        graph_editor_canvas_host = getattr(main_window, "graph_editor_canvas_host", None)
+        if graph_editor_canvas_host is not None and hasattr(graph_editor_canvas_host, "attach_view"):
+            graph_editor_canvas_host.attach_view(main_window.app_state.graph_view)
+
+        # 进入编辑器时：恢复右上角按钮为“前往执行”，并关闭 Todo 预览的 click-signals 模式。
+        graph_view = main_window.app_state.graph_view
+        if hasattr(graph_view, "enable_click_signals"):
+            graph_view.enable_click_signals = False
+        if hasattr(graph_view, "restore_all_opacity"):
+            graph_view.restore_all_opacity()
+        overlay_manager = getattr(graph_view, "overlay_manager", None)
+        if overlay_manager is not None and hasattr(overlay_manager, "stop_all_animations"):
+            overlay_manager.stop_all_animations()
+        preview_panel = getattr(getattr(main_window, "todo_widget", None), "preview_panel", None)
+        if preview_panel is not None and hasattr(preview_panel, "preview_edit_button"):
+            preview_panel.preview_edit_button.setVisible(False)
+        if hasattr(main_window, "graph_editor_todo_button") and main_window.graph_editor_todo_button:
+            graph_view.set_extra_top_right_button(main_window.graph_editor_todo_button)
 
         if main_window.graph_controller.current_graph_id:
             main_window.graph_property_panel.set_graph(main_window.graph_controller.current_graph_id)
         else:
             main_window.graph_property_panel.set_empty_state()
+
+        # 确保图编辑器右上角“前往执行”按钮在任何进入 GRAPH_EDITOR 的路径下都能正确显示。
+        # 说明：按钮初始为隐藏态，且旧逻辑主要依赖“图加载完成”事件触发可见性更新；
+        # 当出现“仅切模式但不触发重新加载”的路径（例如重复打开当前图）时，会导致按钮保持隐藏。
+        main_window._update_graph_editor_todo_button_visibility()
         return "graph_property"
 
 
@@ -73,9 +93,9 @@ class CompositeModePresenter(BaseModePresenter):
             )
 
             main_window.composite_widget = _CompositeNodeManagerWidget(
-                main_window.workspace_path,
-                main_window.library,
-                resource_manager=main_window.resource_manager,
+                main_window.app_state.workspace_path,
+                main_window.app_state.node_library,
+                resource_manager=main_window.app_state.resource_manager,
             )
             main_window.composite_widget.composite_library_updated.connect(
                 main_window._on_composite_library_updated
@@ -91,9 +111,6 @@ class CompositeModePresenter(BaseModePresenter):
             main_window.composite_pin_panel.set_composite_widget(main_window.composite_widget)
 
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
 
         current_composite = main_window.composite_widget.get_current_composite()
         if current_composite:
@@ -110,11 +127,11 @@ class ValidationModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
         _ = request
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
 
-        main_window._trigger_validation()
+        if hasattr(main_window, "_trigger_validation_full"):
+            main_window._trigger_validation_full()
+        else:
+            main_window._trigger_validation()
         return None
 
 
@@ -122,9 +139,6 @@ class PackagesModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
         _ = request
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
 
         main_window.package_library_widget.refresh()
         return None
@@ -134,9 +148,6 @@ class TodoModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
         _ = request
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
 
         main_window._refresh_todo_list()
         return None
@@ -146,18 +157,21 @@ class ManagementModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
         _ = request
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-
-        policy = getattr(main_window, "right_panel_policy", None)
-        apply_method = getattr(policy, "apply_management_section", None)
-        if callable(apply_method):
-            apply_method(None)
 
         selection = main_window._get_management_current_selection()
+        section_key = selection[0] if selection is not None else None
         has_selection = bool(selection and selection[1])
-        main_window._update_signal_property_panel_for_selection(has_selection)
-        main_window._update_struct_property_panel_for_selection(has_selection)
+
+        main_window.right_panel.apply_management_selection(section_key, has_selection=has_selection)
+
+        # 进入管理模式时主动刷新一次专用面板，避免“已有选中但未触发 selection_changed”导致右侧上下文落后。
+        main_window._update_signal_property_panel_for_selection(selection)
+        main_window._update_struct_property_panel_for_selection(selection)
+        main_window._update_main_camera_panel_for_selection(selection)
+        main_window._update_peripheral_system_panel_for_selection(selection)
+        main_window._update_equipment_entry_panel_for_selection(selection)
+        main_window._update_equipment_tag_panel_for_selection(selection)
+        main_window._update_equipment_type_panel_for_selection(selection)
         return None
 
 
@@ -167,9 +181,10 @@ class TemplateModePresenter(BaseModePresenter):
         if hasattr(main_window.property_panel, "set_read_only"):
             main_window.property_panel.set_read_only(False)
         main_window.template_widget.refresh_templates()
-        main_window._ensure_property_tab_visible(main_window.property_panel.isEnabled())
-        main_window._remove_ui_settings_tab()
-        main_window._ensure_management_property_tab_visible(False)
+        main_window.right_panel.ensure_visible(
+            "property",
+            visible=bool(main_window.property_panel.isEnabled()),
+        )
         return "property"
 
 
@@ -179,18 +194,16 @@ class PlacementModePresenter(BaseModePresenter):
         if hasattr(main_window.property_panel, "set_read_only"):
             main_window.property_panel.set_read_only(False)
         main_window.placement_widget._rebuild_instances()
-        main_window._ensure_property_tab_visible(main_window.property_panel.isEnabled())
-        main_window._remove_ui_settings_tab()
-        main_window._ensure_management_property_tab_visible(False)
+        main_window.right_panel.ensure_visible(
+            "property",
+            visible=bool(main_window.property_panel.isEnabled()),
+        )
         return "property"
 
 
 class CombatModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
         main_window.property_panel.clear()
-        main_window._ensure_property_tab_visible(False)
-        main_window._ensure_management_property_tab_visible(False)
-        main_window._remove_ui_settings_tab()
 
         existing_selection = None
         get_selection_before = getattr(main_window.combat_widget, "get_current_selection", None)

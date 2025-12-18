@@ -332,10 +332,17 @@ def _select_creation_anchor_node(
 
     same_block_ids: list[str] = []
     other_ids: list[str] = []
+    filtered_future_nodes = 0
     for created_id in history:
         if created_id == node.id:
             continue
         created_id_str = str(created_id)
+        # 回退执行保护：不允许把“当前步骤之后才会创建”的节点当作锚点/前置参考。
+        # 否则在用户从后续步骤退回时，容易把未来节点（甚至同名节点）误当成当前结构锚点，
+        # 导致坐标映射/锚点校准走偏，进而把节点创建到错误位置。
+        if not _is_reference_node_allowed(executor, created_id_str):
+            filtered_future_nodes += 1
+            continue
         if (target_block_index is not None) and (created_id_str in block_index_by_node):
             if block_index_by_node[created_id_str] == target_block_index:
                 same_block_ids.append(created_id_str)
@@ -343,6 +350,12 @@ def _select_creation_anchor_node(
         other_ids.append(created_id_str)
 
     search_ids: list[str] = same_block_ids if len(same_block_ids) > 0 else [cid for cid in other_ids]
+
+    if filtered_future_nodes > 0:
+        executor.log(
+            f"· 创建锚点：已过滤未来步骤节点 {filtered_future_nodes} 个（回退执行保护）",
+            log_callback,
+        )
 
     if target_block_index is not None and len(same_block_ids) > 0:
         executor.log(

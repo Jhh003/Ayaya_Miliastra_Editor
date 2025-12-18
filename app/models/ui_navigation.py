@@ -214,9 +214,14 @@ class UiNavigationRequest:
         从验证问题 detail 构造导航请求。
 
         约定：
-        - detail["type"] in {"template", "instance", "level_entity"}
-        - 其余字段（template_id / instance_id / graph_name 等）原样放入 payload，
-          由 `NavigationCoordinator` 解释。
+        - detail["type"] 常见取值：
+          - "template" / "instance" / "level_entity"（实体上下文）
+          - "graph"（直接打开节点图）
+          - "composite_node"（跳转到复合节点管理器）
+          - "management_*"（管理配置相关问题，或携带 management_section_key/management_item_id）
+          - 以及其它存档校验规则自定义的 type（例如挂载索引类问题）
+        - 其余字段（template_id / instance_id / graph_id / node_id / edge_id 等）原样放入 payload，
+          由 `NavigationCoordinator` 解释并完成模式切换与定位。
         """
         issue_type = str(detail.get("type", ""))
         resource_kind = "validation_issue"

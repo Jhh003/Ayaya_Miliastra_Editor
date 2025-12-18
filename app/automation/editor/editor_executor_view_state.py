@@ -146,4 +146,25 @@ class EditorExecutorViewStateMixin:
         self._created_node_history.clear()
         self._created_node_lookup.clear()
 
+    def reset_created_node_tracking(self, log_callback=None) -> None:
+        """清空节点创建顺序记录（仅清 tracking，不重置坐标映射）。
+
+        目的：
+        - 执行器实例会被监控面板复用；当用户“执行到一半 → 回退到更早步骤再执行”时，
+          若不清空 `_created_node_history`，创建步骤可能会把“未来步骤节点/同名节点”当作锚点，
+          从而触发错误的视口校准与创建位置偏移。
+
+        约定：
+        - 本方法不触碰 scale_ratio/origin_node_pos，只清空用于“创建锚点选择”的 tracking；
+        - 一般由 UI 执行线程在每轮执行开始时调用。
+        """
+        cleared_count = int(len(self._created_node_history)) if isinstance(self._created_node_history, list) else 0
+        self._created_node_history.clear()
+        self._created_node_lookup.clear()
+        if cleared_count > 0:
+            self._log(
+                f"↻ 已清空节点创建记录：移除 {cleared_count} 个残留记录（新一轮执行）",
+                log_callback,
+            )
+
 

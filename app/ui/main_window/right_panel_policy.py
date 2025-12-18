@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Iterable
 
 from app.models.view_modes import ViewMode
-
-
-@dataclass(slots=True)
-class _ManagementTabRules:
-    ui_settings_section: str = "ui_control_groups"
-    signal_section: str = "signals"
-    struct_sections: tuple[str, str] = ("struct_definitions", "ingame_struct_definitions")
-    main_camera_section: str = "main_cameras"
-    peripheral_system_section: str = "peripheral_systems"
-    equipment_entry_section: str = "equipment_entries"
-    equipment_tag_section: str = "equipment_tags"
-    equipment_type_section: str = "equipment_types"
+from app.ui.main_window.management_right_panel_registry import (
+    get_management_section_right_panel_rule,
+    iter_management_right_panel_tab_ids,
+)
 
 
 class RightPanelPolicy:
@@ -23,7 +14,6 @@ class RightPanelPolicy:
 
     def __init__(self, main_window: Any) -> None:
         self._main_window = main_window
-        self._rules = _ManagementTabRules()
 
     # === 基础能力 ==========================================================
 
@@ -44,56 +34,38 @@ class RightPanelPolicy:
         if section_key is None:
             section_key = self._get_current_management_section_key()
 
-        rules = self._rules
-        is_ui_settings = section_key == rules.ui_settings_section
-        is_signal = section_key == rules.signal_section
-        is_struct = section_key in rules.struct_sections
-        is_main_camera = section_key == rules.main_camera_section
-        is_peripheral_system = section_key == rules.peripheral_system_section
-        is_equipment_entry = section_key == rules.equipment_entry_section
-        is_equipment_tag = section_key == rules.equipment_tag_section
-        is_equipment_type = section_key == rules.equipment_type_section
+        # 旧行为：仅根据 section_key 开启 tab，不考虑是否有条目选中。
+        self.apply_management_selection(section_key, has_selection=True)
 
-        # 先统一隐藏，再按规则开启（避免跨 section 残留）
-        self.set_tab_visible("ui_settings", visible=False)
-        self.set_tab_visible("signal_editor", visible=False)
-        self.set_tab_visible("struct_editor", visible=False)
-        self.set_tab_visible("main_camera_editor", visible=False)
-        self.set_tab_visible("peripheral_system_editor", visible=False)
-        self.set_tab_visible("equipment_entry_editor", visible=False)
-        self.set_tab_visible("equipment_tag_editor", visible=False)
-        self.set_tab_visible("equipment_type_editor", visible=False)
+    def apply_management_selection(self, section_key: str | None, *, has_selection: bool) -> None:
+        """管理模式下的 selection-aware 收敛。
 
-        if is_ui_settings:
-            self._bind_ui_control_group_manager()
-            self.set_tab_visible("ui_settings", visible=True)
-        if is_signal:
-            self.set_tab_visible("signal_editor", visible=True)
-        if is_struct:
-            self.set_tab_visible("struct_editor", visible=True)
-        if is_main_camera:
-            self.set_tab_visible("main_camera_editor", visible=True)
-        if is_peripheral_system:
-            self.set_tab_visible("peripheral_system_editor", visible=True)
-        if is_equipment_entry:
-            self.set_tab_visible("equipment_entry_editor", visible=True)
-        if is_equipment_tag:
-            self.set_tab_visible("equipment_tag_editor", visible=True)
-        if is_equipment_type:
-            self.set_tab_visible("equipment_type_editor", visible=True)
+        - `ui_settings` 仅依赖 section_key（界面控件组），即使无条目选中也应可见；
+        - 其它专用编辑页签（signals/structs/main_camera/peripheral/equipment）仅在有有效条目选中时可见，
+          避免出现“空白编辑页签残留”。
+        """
+        current_mode = ViewMode.from_index(self._main_window.central_stack.currentIndex())
+        if current_mode != ViewMode.MANAGEMENT:
+            return
 
-    def _bind_ui_control_group_manager(self) -> None:
-        management_widget = getattr(self._main_window, "management_widget", None)
-        if management_widget is None:
+        if section_key is None:
+            section_key = self._get_current_management_section_key()
+
+        # 先统一隐藏，再按注册表规则开启（避免跨 section 残留）
+        for tab_id in iter_management_right_panel_tab_ids():
+            self.set_tab_visible(tab_id, visible=False)
+
+        rule = get_management_section_right_panel_rule(section_key)
+        if rule is None:
             return
-        if not hasattr(management_widget, "ui_control_group_manager"):
+
+        should_show = (not rule.selection_required) or has_selection
+        if not should_show:
             return
-        ui_panel = getattr(self._main_window, "ui_control_settings_panel", None)
-        if ui_panel is None:
-            return
-        bind_method = getattr(ui_panel, "bind_manager", None)
-        if callable(bind_method):
-            bind_method(management_widget.ui_control_group_manager)
+
+        if rule.on_section_enter is not None:
+            rule.on_section_enter(self._main_window)
+        self.set_tab_visible(rule.tab_id, visible=True)
 
     def _get_current_management_section_key(self) -> str | None:
         management_widget = getattr(self._main_window, "management_widget", None)

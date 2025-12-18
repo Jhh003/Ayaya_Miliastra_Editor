@@ -141,7 +141,7 @@ def collapse_duplicate_data_copies(model: GraphModel) -> int:
             continue
 
         original_id = _resolve_canonical_original_id(node)
-        copy_block_id = node.copy_block_id or _infer_copy_block_id_from_node_id(node.id)
+        copy_block_id = node.copy_block_id or infer_copy_block_id_from_node_id(node.id)
         if not original_id or not copy_block_id:
             continue
 
@@ -228,11 +228,3 @@ def _prune_basic_blocks(model: GraphModel) -> None:
         block.nodes = [node_id for node_id in block.nodes if node_id in existing_ids]
 
 
-def _strip_copy_suffix(node_id: str) -> str:
-    """去除节点ID中的副本后缀（兼容旧调用点，转发到 copy_identity_utils）。"""
-    return strip_copy_suffix(node_id)
-
-
-def _infer_copy_block_id_from_node_id(node_id: str) -> str:
-    """从节点ID推断副本所属块ID（兼容旧调用点，转发到 copy_identity_utils）。"""
-    return infer_copy_block_id_from_node_id(node_id)

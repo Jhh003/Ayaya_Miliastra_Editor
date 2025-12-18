@@ -72,7 +72,14 @@ class PackageView:
                     template_id
                 )
                 if template_data:
-                    self._templates_cache[template_id] = TemplateConfig.deserialize(template_data)
+                    template_obj = TemplateConfig.deserialize(template_data)
+                    source_mtime = self.resource_manager.get_resource_file_mtime(
+                        ResourceType.TEMPLATE,
+                        str(template_id),
+                    )
+                    if source_mtime is not None:
+                        setattr(template_obj, "_source_mtime", float(source_mtime))
+                    self._templates_cache[template_id] = template_obj
         return self._templates_cache
     
     @property
@@ -86,7 +93,14 @@ class PackageView:
                     instance_id
                 )
                 if instance_data:
-                    self._instances_cache[instance_id] = InstanceConfig.deserialize(instance_data)
+                    instance_obj = InstanceConfig.deserialize(instance_data)
+                    source_mtime = self.resource_manager.get_resource_file_mtime(
+                        ResourceType.INSTANCE,
+                        str(instance_id),
+                    )
+                    if source_mtime is not None:
+                        setattr(instance_obj, "_source_mtime", float(source_mtime))
+                    self._instances_cache[instance_id] = instance_obj
         return self._instances_cache
     
     @property
@@ -108,7 +122,14 @@ class PackageView:
                 level_entity_id,
             )
             if isinstance(level_entity_data, dict):
-                self._level_entity_cache = InstanceConfig.deserialize(level_entity_data)
+                level_entity_obj = InstanceConfig.deserialize(level_entity_data)
+                source_mtime = self.resource_manager.get_resource_file_mtime(
+                    ResourceType.INSTANCE,
+                    str(level_entity_id),
+                )
+                if source_mtime is not None:
+                    setattr(level_entity_obj, "_source_mtime", float(source_mtime))
+                self._level_entity_cache = level_entity_obj
                 return self._level_entity_cache
 
         # 3. 当前存档确实不存在关卡实体

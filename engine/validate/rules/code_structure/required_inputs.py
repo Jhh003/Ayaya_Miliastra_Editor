@@ -11,11 +11,17 @@ from engine.utils.graph.graph_utils import is_flow_port_name
 from ...context import ValidationContext
 from ...issue import EngineIssue
 from ...pipeline import ValidationRule
-from ..ast_utils import create_rule_issue, get_cached_module, iter_class_methods, line_span_text
+from ..ast_utils import (
+    create_rule_issue,
+    get_cached_module,
+    infer_graph_scope,
+    iter_class_methods,
+    line_span_text,
+)
 
 
 @lru_cache(maxsize=8)
-def _required_input_ports_by_func(workspace_path: Path) -> Dict[str, List[str]]:
+def _required_input_ports_by_func(workspace_path: Path, scope: str) -> Dict[str, List[str]]:
     """构造 {节点函数名: 必填输入端口名列表(按声明顺序)} 映射。
 
     约定：
@@ -23,6 +29,10 @@ def _required_input_ports_by_func(workspace_path: Path) -> Dict[str, List[str]]:
     - 流程端口（如“流程入/流程出”）不参与 Graph Code 的参数传递，因此不视为缺参；
     - 变参占位端口（名称中含“~”）不视为真实端口名，不参与缺参判断。
     """
+    scope_text = str(scope or "").strip().lower()
+    if scope_text not in {"server", "client"}:
+        scope_text = "server"
+
     # 仅针对“基础节点函数调用”做缺参校验：
     # 复合节点在 Graph Code 中以“类实例 + 方法调用”形式出现，不以节点函数调用形式传入端口。
     registry = get_node_registry(workspace_path, include_composite=False)
@@ -30,6 +40,8 @@ def _required_input_ports_by_func(workspace_path: Path) -> Dict[str, List[str]]:
     mapping: Dict[str, List[str]] = {}
     for _, node_def in (library.items() if isinstance(library, dict) else []):
         if bool(getattr(node_def, "is_composite", False)):
+            continue
+        if not bool(getattr(node_def, "is_available_in_scope", lambda _scope: True)(scope_text)):
             continue
         func_name = getattr(node_def, "name", "") or ""
         if not isinstance(func_name, str) or func_name == "":
@@ -68,7 +80,8 @@ class RequiredInputsRule(ValidationRule):
 
         file_path: Path = ctx.file_path
         tree = get_cached_module(ctx)
-        required_ports_by_func = _required_input_ports_by_func(ctx.workspace_path)
+        scope = infer_graph_scope(ctx)
+        required_ports_by_func = _required_input_ports_by_func(ctx.workspace_path, scope)
         if not required_ports_by_func:
             return []
 

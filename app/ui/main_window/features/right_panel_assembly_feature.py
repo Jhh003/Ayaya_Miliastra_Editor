@@ -5,7 +5,8 @@ from typing import Any, Callable
 from app.models.view_modes import ViewMode
 from app.ui.execution.monitor import ExecutionMonitorPanel
 from app.ui.main_window.features.feature_protocol import MainWindowFeature
-from app.ui.main_window.right_panel_policy import RightPanelPolicy
+from app.ui.main_window.management_right_panel_registry import MANAGEMENT_RIGHT_PANEL_DYNAMIC_TABS
+from app.ui.main_window.right_panel_controller import build_right_panel_controller
 from app.ui.main_window.wiring.right_panel_binder import (
     bind_combat_panels,
     bind_composite_panels,
@@ -36,18 +37,12 @@ class RightPanelAssemblyFeature(MainWindowFeature):
         execution_monitor_panel = ExecutionMonitorPanel(side_tab)
         execution_monitor_panel.hide()
 
-        if hasattr(execution_monitor_panel, "graph_view"):
-            execution_monitor_panel.graph_view = getattr(main_window, "view", None)
-        if hasattr(execution_monitor_panel, "current_workspace_path"):
-            execution_monitor_panel.current_workspace_path = getattr(main_window, "workspace_path", None)
-        if hasattr(execution_monitor_panel, "get_current_graph_model"):
-            graph_controller = getattr(main_window, "graph_controller", None)
-            getter = getattr(graph_controller, "get_current_model", None) if graph_controller is not None else None
-            if callable(getter):
-                execution_monitor_panel.get_current_graph_model = getter
-
-        # 兼容旧访问路径：Todo/快捷键路由会 getattr(main_window, "execution_monitor_panel", None)
-        main_window.execution_monitor_panel = execution_monitor_panel
+        execution_monitor_panel.graph_view = main_window.app_state.graph_view
+        execution_monitor_panel.current_workspace_path = main_window.app_state.workspace_path
+        graph_controller = getattr(main_window, "graph_controller", None)
+        getter = getattr(graph_controller, "get_current_model", None) if graph_controller is not None else None
+        if callable(getter):
+            execution_monitor_panel.get_current_graph_model = getter
 
         # === 2) 右侧面板信号 wiring（原本分散在 UISetupMixin） ===
         connect_optional_signal = getattr(main_window, "_connect_optional_signal", None)
@@ -62,8 +57,12 @@ class RightPanelAssemblyFeature(MainWindowFeature):
         # === 3) 右侧标签注册矩阵（原本在 wiring/right_panel_registry_config.py） ===
         self._register_right_panel_tabs(main_window=main_window, execution_monitor_panel=execution_monitor_panel)
 
-        # === 4) 右侧联动策略（集中管理 section/mode → tabs 显隐） ===
-        main_window.right_panel_policy = RightPanelPolicy(main_window)
+        # === 4) 右侧对外唯一入口（Facade）：main_window.right_panel ===
+        main_window.right_panel = build_right_panel_controller(
+            main_window=main_window,
+            registry=right_panel_registry,
+        )
+        # 注意：不再在 main_window 上额外暴露 right_panel_policy，避免多入口漂移。
 
     def _require_callable(self, main_window: Any, attribute_name: str) -> Callable[..., Any]:
         target = getattr(main_window, attribute_name, None)
@@ -195,61 +194,25 @@ class RightPanelAssemblyFeature(MainWindowFeature):
             allowed_modes=(ViewMode.MANAGEMENT, ViewMode.PACKAGES),
         )
         registry.register_dynamic(
-            "ui_settings",
-            main_window.ui_control_settings_panel,
-            "界面控件设置",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
             "execution_monitor",
             execution_monitor_panel,
             "执行监控",
             allowed_modes=(ViewMode.TODO,),
         )
 
-        # 管理模式专用编辑页
-        registry.register_dynamic(
-            "signal_editor",
-            main_window.signal_management_panel,
-            "信号",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
-            "struct_editor",
-            main_window.struct_definition_panel,
-            "结构体",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
-            "main_camera_editor",
-            main_window.main_camera_panel,
-            "主镜头",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
-            "peripheral_system_editor",
-            main_window.peripheral_system_panel,
-            "外围系统",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
-            "equipment_entry_editor",
-            main_window.equipment_entry_panel,
-            "装备词条",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
-            "equipment_tag_editor",
-            main_window.equipment_tag_panel,
-            "装备标签",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
-        registry.register_dynamic(
-            "equipment_type_editor",
-            main_window.equipment_type_panel,
-            "装备类型",
-            allowed_modes=(ViewMode.MANAGEMENT,),
-        )
+        # 管理模式右侧 tab：统一走 registry 配置（避免 tab_id/title/属性名三处硬编码）
+        for tab_spec in MANAGEMENT_RIGHT_PANEL_DYNAMIC_TABS:
+            widget = getattr(main_window, tab_spec.main_window_attribute, None)
+            if widget is None:
+                raise RuntimeError(
+                    f"RightPanelAssemblyFeature._register_right_panel_tabs 缺少 main_window.{tab_spec.main_window_attribute}"
+                )
+            registry.register_dynamic(
+                tab_spec.tab_id,
+                widget,
+                tab_spec.title,
+                allowed_modes=tab_spec.allowed_modes,
+            )
 
         # 战斗预设详情页（战斗模式与存档库模式下允许临时拉起）
         registry.register_dynamic(

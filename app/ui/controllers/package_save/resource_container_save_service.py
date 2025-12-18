@@ -11,10 +11,15 @@ class ResourceContainerSaveService:
     def __init__(self, resource_manager: ResourceManager):
         self._resource_manager = resource_manager
 
-    def save_container(self, container: object, object_type: str, *, verbose: bool) -> None:
+    def save_container(self, container: object, object_type: str, *, verbose: bool) -> bool:
         """统一保存资源容器（模板、实例或关卡实体）。"""
         if not container:
-            return
+            return False
+
+        expected_mtime: float | None = None
+        expected_mtime_candidate = getattr(container, "_source_mtime", None)
+        if isinstance(expected_mtime_candidate, (int, float)) and float(expected_mtime_candidate) > 0:
+            expected_mtime = float(expected_mtime_candidate)
 
         if object_type == "template":
             if hasattr(container, "template_id"):
@@ -23,11 +28,26 @@ class ResourceContainerSaveService:
                 guid_value = None
                 if isinstance(metadata, dict):
                     guid_value = metadata.get("guid")
-                self._resource_manager.save_resource(
+                save_ok = self._resource_manager.save_resource(
                     ResourceType.TEMPLATE,
                     container.template_id,  # type: ignore[attr-defined]
                     payload,
+                    expected_mtime=expected_mtime,
                 )
+                if not save_ok:
+                    print(
+                        "[RESOURCE-SAVE] 模板保存被阻止（疑似外部修改冲突）："
+                        f"id={container.template_id!r}, expected_mtime={expected_mtime!r}"  # type: ignore[attr-defined]
+                    )
+                    return False
+
+                # 保存成功后：刷新容器的 source_mtime 基线，供后续冲突检测使用
+                latest_mtime = self._resource_manager.get_resource_file_mtime(
+                    ResourceType.TEMPLATE,
+                    str(container.template_id),  # type: ignore[attr-defined]
+                )
+                if latest_mtime is not None:
+                    setattr(container, "_source_mtime", float(latest_mtime))
                 print(
                     "[RESOURCE-SAVE] 模板已保存："
                     f"name={getattr(container, 'name', '')!r}, "
@@ -37,7 +57,8 @@ class ResourceContainerSaveService:
                     print(
                         f"已保存模板：{getattr(container, 'name', '')} ({container.template_id})"  # type: ignore[attr-defined]
                     )
-            return
+                return True
+            return False
 
         if object_type in ("instance", "level_entity"):
             if hasattr(container, "instance_id"):
@@ -46,11 +67,25 @@ class ResourceContainerSaveService:
                 guid_value = None
                 if isinstance(metadata, dict):
                     guid_value = metadata.get("guid")
-                self._resource_manager.save_resource(
+                save_ok = self._resource_manager.save_resource(
                     ResourceType.INSTANCE,
                     container.instance_id,  # type: ignore[attr-defined]
                     payload,
+                    expected_mtime=expected_mtime,
                 )
+                if not save_ok:
+                    print(
+                        "[RESOURCE-SAVE] 实例保存被阻止（疑似外部修改冲突）："
+                        f"id={container.instance_id!r}, expected_mtime={expected_mtime!r}"  # type: ignore[attr-defined]
+                    )
+                    return False
+
+                latest_mtime = self._resource_manager.get_resource_file_mtime(
+                    ResourceType.INSTANCE,
+                    str(container.instance_id),  # type: ignore[attr-defined]
+                )
+                if latest_mtime is not None:
+                    setattr(container, "_source_mtime", float(latest_mtime))
                 print(
                     "[RESOURCE-SAVE] 实例已保存："
                     f"name={getattr(container, 'name', '')!r}, "
@@ -61,6 +96,10 @@ class ResourceContainerSaveService:
                     print(
                         f"已保存实例：{getattr(container, 'name', '')} ({container.instance_id})"  # type: ignore[attr-defined]
                     )
+                return True
+            return False
+
+        return False
 
     def save_resources_for_ids(
         self,
@@ -81,8 +120,7 @@ class ResourceContainerSaveService:
                     template_obj = template_getter(template_id)
                     if template_obj is None:
                         continue
-                    self.save_container(template_obj, "template", verbose=verbose)
-                    saved_any = True
+                    saved_any = self.save_container(template_obj, "template", verbose=verbose) or saved_any
 
         if instance_ids:
             instance_getter = getattr(package, "get_instance", None)
@@ -91,14 +129,12 @@ class ResourceContainerSaveService:
                     instance_obj = instance_getter(instance_id)
                     if instance_obj is None:
                         continue
-                    self.save_container(instance_obj, "instance", verbose=verbose)
-                    saved_any = True
+                    saved_any = self.save_container(instance_obj, "instance", verbose=verbose) or saved_any
 
         if save_level_entity:
             level_entity_obj = getattr(package, "level_entity", None)
             if level_entity_obj is not None:
-                self.save_container(level_entity_obj, "level_entity", verbose=verbose)
-                saved_any = True
+                saved_any = self.save_container(level_entity_obj, "level_entity", verbose=verbose) or saved_any
 
         return saved_any
 
@@ -118,7 +154,6 @@ class ResourceContainerSaveService:
         if current_graph_container is None or not object_type:
             return False
 
-        self.save_container(current_graph_container, str(object_type), verbose=verbose)
-        return True
+        return bool(self.save_container(current_graph_container, str(object_type), verbose=verbose))
 
 

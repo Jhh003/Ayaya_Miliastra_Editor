@@ -231,17 +231,18 @@ class SceneInteractionMixin:
             )
 
         # 通过视图显示节点菜单（带类型过滤）
+        from app.ui.graph.graph_view import GraphView
         for view in self.views():
-            if not hasattr(view, "_show_add_node_menu"):
+            if not isinstance(view, GraphView):
                 continue
 
             view_pos = view.mapFromScene(event_scene_pos)
             global_pos = view.mapToGlobal(view_pos)
-            view._show_add_node_menu(
+            view.show_add_node_menu(
                 global_pos,
                 event_scene_pos,
-                filter_port_type,
-                self.pending_is_src_output,
+                filter_port_type=filter_port_type,
+                is_output=self.pending_is_src_output,
             )
             break
 

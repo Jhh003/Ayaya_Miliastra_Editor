@@ -41,20 +41,11 @@ class PackageLoadSaveMixin:
         """存档加载完成"""
         package = self.package_controller.current_package
 
-        self.template_widget.set_package(package)
-        self.placement_widget.set_package(package)
-        self.combat_widget.set_package(package)
-        self.management_widget.set_package(package)
-        self.graph_library_widget.set_package(package)
-
-        # 管理编辑页（按 section 拆分的旧管理页面）同样绑定到当前视图，
-        # 确保右侧编辑内容与管理库列表的数据来源一致。
-        management_edit_pages = getattr(self, "management_edit_pages", None)
-        if isinstance(management_edit_pages, dict):
-            for editor in management_edit_pages.values():
-                set_package = getattr(editor, "set_package", None)
-                if callable(set_package) and package is not None:
-                    set_package(package)
+        self.template_widget.set_context(package)
+        self.placement_widget.set_context(package)
+        self.combat_widget.set_context(package)
+        self.management_widget.set_context(package)
+        self.graph_library_widget.set_context(package)
 
         self._refresh_package_list()
 
@@ -64,10 +55,16 @@ class PackageLoadSaveMixin:
 
     def _on_package_saved(self) -> None:
         """存档保存完成"""
+        # 存档保存会写入 assets/资源库 下的多类资源与功能包索引，可能触发 directoryChanged 风暴；
+        # 标记为“内部写盘”以抑制资源库自动刷新误触发。
+        file_watcher_manager = getattr(self, "file_watcher_manager", None)
+        update_method = getattr(file_watcher_manager, "update_last_resource_write_time", None)
+        if callable(update_method):
+            update_method()
         self._trigger_validation()
         # 存档落盘后刷新存档库页面，确保 GUID / 挂载节点图等汇总信息与最新落盘状态保持一致。
         if hasattr(self, "package_library_widget"):
-            self.package_library_widget.refresh()
+            self.package_library_widget.reload()
 
     # === 存档下拉框 ===
 

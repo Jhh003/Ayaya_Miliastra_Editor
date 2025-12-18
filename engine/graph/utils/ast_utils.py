@@ -209,27 +209,3 @@ def is_class_structure_format(code: str) -> bool:
     
     return False
 
-
-def find_composite_function(tree: ast.Module) -> Optional[ast.FunctionDef]:
-    """查找复合节点函数定义
-    
-    复合节点函数特征：
-    - 第一个参数为 game: GameRuntime（或简写为 game）
-    - 有返回类型标注（或无返回值）
-    
-    Args:
-        tree: AST模块节点
-        
-    Returns:
-        找到的函数定义，或None
-    """
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            # 检查第一个参数是否为 game
-            if node.args.args:
-                first_arg = node.args.args[0]
-                if first_arg.arg == 'game':
-                    return node
-    
-    return None
-

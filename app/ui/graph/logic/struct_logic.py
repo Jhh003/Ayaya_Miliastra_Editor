@@ -44,7 +44,27 @@ def _extract_struct_fields(struct_data: Mapping[str, object]) -> List[Tuple[str,
     """从结构体定义 JSON 中提取字段列表，返回 (字段名, 规范类型名)。"""
     value_entries = struct_data.get("value")
     if not isinstance(value_entries, Sequence) or isinstance(value_entries, (str, bytes)):
-        return []
+        fields_entries = struct_data.get("fields")
+        if not isinstance(fields_entries, Sequence) or isinstance(
+            fields_entries, (str, bytes)
+        ):
+            return []
+
+        fields: List[Tuple[str, str]] = []
+        for entry in fields_entries:
+            if not isinstance(entry, Mapping):
+                continue
+            raw_name = entry.get("field_name")
+            raw_param_type = entry.get("param_type")
+            field_name = str(raw_name).strip() if isinstance(raw_name, str) else ""
+            param_type = (
+                str(raw_param_type).strip() if isinstance(raw_param_type, str) else ""
+            )
+            if not field_name or not param_type:
+                continue
+            canonical_type = param_type_to_canonical(param_type)
+            fields.append((field_name, canonical_type))
+        return fields
 
     fields: List[Tuple[str, str]] = []
     for entry in value_entries:
@@ -98,7 +118,7 @@ def resolve_struct_binding(
     if isinstance(raw_struct_name, str) and raw_struct_name.strip():
         struct_name_text = raw_struct_name.strip()
     else:
-        raw_name_from_def = struct_data.get("name")
+        raw_name_from_def = struct_data.get("name") or struct_data.get("struct_name")
         if isinstance(raw_name_from_def, str) and raw_name_from_def.strip():
             struct_name_text = raw_name_from_def.strip()
         else:

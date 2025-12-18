@@ -13,6 +13,7 @@ from PyQt6 import QtCore, QtWidgets
 
 from engine.utils.logging.logger import log_info
 from app.ui.devtools.view_inspector import WidgetHoverInspector
+from app.models.view_modes import ViewMode
 
 # 导入所有Mixin
 from .controller_setup_mixin import ControllerSetupMixin
@@ -55,14 +56,6 @@ class MainWindowV2(
 
         # 启动期装配结果（单一真源）：workspace / settings / 节点库 / 资源索引 / 图编辑器基础对象
         self.app_state: MainWindowAppState = build_main_window_app_state(workspace)
-        # 向后兼容：Mixin 体系仍通过 self.* 访问这些属性
-        self.workspace_path = self.app_state.workspace_path
-        self.library = self.app_state.node_library
-        self.resource_manager = self.app_state.resource_manager
-        self.package_index_manager = self.app_state.package_index_manager
-        self.model = self.app_state.graph_model
-        self.scene = self.app_state.graph_scene
-        self.view = self.app_state.graph_view
 
         # 资源刷新服务（只负责失效与重建）
         self.resource_refresh_service = ResourceRefreshService()
@@ -116,13 +109,33 @@ class MainWindowV2(
         log_info("[BOOT][MainWindow] 初始存档加载流程完成")
 
         # 在初始存档与视图装配完成后，尝试恢复上一次会话的 UI 状态
-        if hasattr(self, "_restore_ui_session_state"):
-            log_info("[BOOT][MainWindow] 检测到 UI 会话状态恢复入口，准备尝试恢复")
-            # 延后到事件循环启动后执行，避免在主窗口构造期同步打开上次会话中的大图导致 UI 延迟显示。
-            QtCore.QTimer.singleShot(0, self._restore_ui_session_state)
-            log_info("[BOOT][MainWindow] UI 会话状态恢复已排队（将延后执行）")
+        log_info("[BOOT][MainWindow] 准备尝试恢复 UI 会话状态（已排队，延后执行）")
+        # 延后到事件循环启动后执行，避免在主窗口构造期同步打开上次会话中的大图导致 UI 延迟显示。
+        QtCore.QTimer.singleShot(0, self._restore_ui_session_state)
 
         log_info("[BOOT][MainWindow] __init__ 完成")
+
+    # === 显式接口：供服务层调用（避免依赖 mixin 私有方法名） ===
+
+    def refresh_save_status_label_for_mode(self, view_mode: ViewMode) -> None:
+        """稳定钩子：刷新右上角保存状态提示（由 WindowAndNavigationEventsMixin 实现）。"""
+        self._refresh_save_status_label_for_mode(view_mode)
+
+    def schedule_ui_session_state_save(self) -> None:
+        """稳定钩子：请求一次轻量去抖的 UI 会话状态保存（由 WindowAndNavigationEventsMixin 实现）。"""
+        self._schedule_ui_session_state_save()
+
+    def save_current_composite_if_needed(self) -> None:
+        """稳定钩子：离开复合节点模式前保存当前复合节点（由主窗口统一封装复合管理器协议）。"""
+        composite_manager = getattr(self, "composite_widget", None)
+        current_composite_identifier = getattr(composite_manager, "current_composite_id", None)
+        if not current_composite_identifier:
+            return
+        log_info("[MODE] saving composite before leaving: {}", current_composite_identifier)
+        save_method = getattr(composite_manager, "_save_current_composite", None)
+        if not callable(save_method):
+            raise RuntimeError("composite_widget 缺少 _save_current_composite，无法保存当前复合节点")
+        save_method()
 
     def _on_dev_tools_toggled(self, enabled: bool) -> None:
         """F12 开关：启用或关闭 UI 悬停检查器。"""
@@ -134,6 +147,7 @@ class MainWindowV2(
         refresh_outcome = self.resource_refresh_service.refresh(
             app_state=self.app_state,
             package_controller=self.package_controller,
+            graph_controller=self.graph_controller,
             global_resource_view=getattr(self, "_global_resource_view", None),
         )
 
@@ -146,9 +160,9 @@ class MainWindowV2(
         # 2) 节点图库与存档库依赖 ResourceManager / PackageIndexManager 的聚合结果
         #    在资源索引变化后也需要刷新以反映最新落盘状态。
         #    注意：当 did_refresh_package_context=True 时，_on_package_loaded 已调用
-        #    graph_library_widget.set_package(...) 并触发其内部刷新，无需再次重复 refresh。
+        #    graph_library_widget.set_context(...) 并触发其内部刷新，无需再次重复 reload。
         if (not did_refresh_package_context) and hasattr(self, "graph_library_widget"):
-            self.graph_library_widget.refresh()
+            self.graph_library_widget.reload()
         if hasattr(self, "package_library_widget"):
-            self.package_library_widget.refresh()
+            self.package_library_widget.reload()
 

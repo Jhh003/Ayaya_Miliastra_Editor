@@ -82,7 +82,9 @@ class StructViewerDialog(BaseDialog):
             return
 
         # 提取结构体名称
-        struct_name_value = self._struct_payload.get("name")
+        struct_name_value = self._struct_payload.get("name") or self._struct_payload.get(
+            "struct_name"
+        )
         struct_name = (
             str(struct_name_value).strip()
             if isinstance(struct_name_value, str)
@@ -118,6 +120,37 @@ class StructViewerDialog(BaseDialog):
                     "type_name": canonical_type,
                     "value_node": raw_value,
                 })
+        else:
+            fields_entries = self._struct_payload.get("fields")
+            if isinstance(fields_entries, Sequence):
+                for entry in fields_entries:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    raw_field_name = entry.get("field_name")
+                    raw_param_type = entry.get("param_type")
+                    raw_default_value = entry.get("default_value")
+
+                    field_name = (
+                        str(raw_field_name).strip()
+                        if isinstance(raw_field_name, str)
+                        else ""
+                    )
+                    param_type = (
+                        str(raw_param_type).strip()
+                        if isinstance(raw_param_type, str)
+                        else ""
+                    )
+                    if not field_name or not param_type:
+                        continue
+
+                    canonical_type = param_type_to_canonical(param_type)
+                    fields.append(
+                        {
+                            "name": field_name,
+                            "type_name": canonical_type,
+                            "value_node": raw_default_value,
+                        }
+                    )
 
         self._editor.load_struct(
             struct_name=struct_name,

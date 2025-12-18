@@ -192,6 +192,22 @@ class ResourceManager:
         """
         self._fingerprint_invalidated = True
 
+    def refresh_resource_library_fingerprint_if_invalidated(self) -> bool:
+        """仅在“指纹被内部写盘标记为脏”时刷新资源库指纹基线。
+
+        设计动机：
+        - `save_resource/delete_resource` 会调用 `invalidate_fingerprint()`，表示“资源库变化来自进程内写盘”；
+        - 保存链条/刷新链条中经常需要把这类内部变更同步到基线，避免后续误判为外部修改；
+        - 该方法**不会**用于吞掉真实外部变更：只有在脏标记为 True 时才会刷新并返回 True。
+
+        Returns:
+            True：本次确实刷新了基线；False：基线保持不变。
+        """
+        if not self._fingerprint_invalidated:
+            return False
+        self.refresh_resource_library_fingerprint()
+        return True
+
     def refresh_resource_library_fingerprint(self) -> str:
         """重新计算并更新资源库指纹记录。"""
         latest_fingerprint = self.compute_resource_library_fingerprint()
@@ -279,6 +295,23 @@ class ResourceManager:
             被删除的缓存文件数量（0或1）
         """
         return self._persistent_graph_cache_manager.clear_persistent_graph_cache_for(graph_id)
+
+    def invalidate_graph_for_reparse(self, graph_id: str) -> None:
+        """为“重新解析 .py”场景集中失效该图的缓存（内存 + 磁盘持久化）。
+
+        适用场景：
+        - 布局语义开关发生变化（例如跨块复制 True→False）后，需要强制从源 .py 重新解析，
+          清除历史副本或旧布局结果；
+        - 其它明确需要绕过持久化 graph_cache 的场景。
+
+        说明：
+        - 该方法只负责失效“资源层缓存”（ResourceCacheService + app/runtime/cache/graph_cache）。
+        - UI/任务清单使用的进程内 graph_data payload 缓存由应用层服务统一失效。
+        """
+        if not graph_id:
+            raise ValueError("graph_id is required")
+        self.clear_cache(ResourceType.GRAPH, graph_id)
+        self.clear_persistent_graph_cache_for(graph_id)
     
     def clear_persistent_node_cache(self) -> int:
         """清空磁盘上的节点库持久化缓存（app/runtime/cache/node_cache）。"""
@@ -351,17 +384,56 @@ class ResourceManager:
             layout_changed=layout_changed,
         )
     
-    def save_resource(self, resource_type: ResourceType, resource_id: str, data: dict) -> bool:
+    def save_resource(
+        self,
+        resource_type: ResourceType,
+        resource_id: str,
+        data: dict,
+        *,
+        expected_mtime: float | None = None,
+        allow_overwrite_external: bool = False,
+    ) -> bool:
         """保存单个资源
         
         Args:
             resource_type: 资源类型
             resource_id: 资源ID
             data: 资源数据（字典格式）
+            expected_mtime: 期望的“磁盘版本”（文件 mtime）。用于检测外部修改并阻止静默覆盖。
+            allow_overwrite_external: 若为 True，则在检测到外部修改时仍允许覆盖写入。
         
         Returns:
             是否保存成功
         """
+        normalized_expected_mtime: float | None = None
+        if isinstance(expected_mtime, (int, float)) and float(expected_mtime) > 0:
+            normalized_expected_mtime = float(expected_mtime)
+
+        # VSCode 风格的“保存冲突”检测：文件在磁盘上发生过外部修改时，默认拒绝覆盖。
+        if normalized_expected_mtime is not None and not allow_overwrite_external:
+            existing_file = self._state.get_file_path(resource_type, resource_id)
+            if existing_file is None:
+                if resource_type == ResourceType.GRAPH:
+                    existing_file = self.get_graph_file_path(resource_id)
+                else:
+                    existing_file = self._file_ops.get_resource_file_path(
+                        resource_type,
+                        resource_id,
+                        self.id_to_filename_cache,
+                    )
+            if existing_file is not None and existing_file.exists():
+                current_mtime = float(existing_file.stat().st_mtime)
+                if abs(current_mtime - normalized_expected_mtime) >= 0.001:
+                    log_warn(
+                        "[SAVE-CONFLICT] 资源在磁盘上已变化，已阻止保存覆盖：type={}, id={}, expected_mtime={}, actual_mtime={}, path={}",
+                        resource_type,
+                        resource_id,
+                        normalized_expected_mtime,
+                        current_mtime,
+                        str(existing_file),
+                    )
+                    return False
+
         # 添加元数据：大多数资源写入更新时间，结构体定义保持纯 Struct JSON（与运行时期望格式一致）
         if resource_type is not ResourceType.STRUCT_DEFINITION:
             if "updated_at" not in data:
@@ -986,6 +1058,31 @@ class ResourceManager:
             return self._state.get_file_path(ResourceType.GRAPH, graph_id)
         
         return None
+
+    def get_resource_file_mtime(self, resource_type: ResourceType, resource_id: str) -> float | None:
+        """获取资源文件的 mtime（用于保存冲突检测）。
+
+        约定：
+        - 对于 GRAPH 使用 `.py` 文件；其余资源使用 `.json` 文件。
+        - 若资源文件不存在，返回 None。
+        """
+        resource_file: Path | None
+
+        if resource_type == ResourceType.GRAPH:
+            resource_file = self.get_graph_file_path(str(resource_id))
+        else:
+            resource_file = self._state.get_file_path(resource_type, str(resource_id))
+            if resource_file is None:
+                resource_file = self._file_ops.get_resource_file_path(
+                    resource_type,
+                    str(resource_id),
+                    self.id_to_filename_cache,
+                )
+
+        if resource_file is None or not resource_file.exists():
+            return None
+
+        return float(resource_file.stat().st_mtime)
     
     def remove_graph_folder_if_empty(self, graph_type: str, folder_path: str) -> bool:
         """删除空的节点图文件夹

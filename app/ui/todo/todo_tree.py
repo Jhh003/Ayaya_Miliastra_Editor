@@ -6,8 +6,6 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt
 
 from app.models import TodoItem
-from engine.graph.models.graph_model import GraphModel
-from engine.resources.resource_manager import ResourceType
 
 from app.ui.todo.todo_config import TaskTypeMetadata, TodoStyles, StepTypeColors, DetailTypeIcons, StepTypeRules
 from app.ui.foundation.theme_manager import Colors as ThemeColors
@@ -15,6 +13,8 @@ from app.ui.foundation.refresh_gate import RefreshGate
 from app.ui.todo.tree_check_helpers import set_all_children_state, apply_parent_progress, apply_leaf_state
 from app.ui.todo.todo_tree_graph_support import TodoTreeGraphSupport
 from app.ui.todo.todo_tree_graph_expander import expand_graph_on_demand
+from app.ui.todo.todo_tree_node_highlight import TodoTreeNodeHighlighter
+from app.ui.todo.todo_tree_source_tooltip import TodoTreeSourceTooltipProvider
 from app.ui.todo.todo_event_flow_blocks import (
     build_event_flow_block_groups,
     collect_block_node_ids_for_header_item,
@@ -64,14 +64,23 @@ class TodoTreeManager(QtCore.QObject):
         self._current_block_header_item: Optional[QtWidgets.QTreeWidgetItem] = None
         # UI 辅助状态：当前因“节点选中”而高亮的 Todo ID 集合
         self._current_node_highlight_ids: set[str] = set()
+        # UI 辅助状态：当前“节点选中高亮”模式下的锚点步骤（通常为创建步骤）
+        self._current_node_anchor_todo_id: Optional[str] = None
         # UI 辅助状态：当前是否处于“按节点过滤步骤”的置灰模式
         self._node_filter_active: bool = False
         # 富文本委托使用的“置灰标记”角色：约定为富文本角色之后的一个自定义角色。
         self.DIMMED_ROLE: int = self.RICH_SEGMENTS_ROLE + 1
-        # 图源码缓存：graph_id -> 源码行列表
-        self._graph_source_lines_cache: Dict[str, List[str]] = {}
-        # 步骤源码提示缓存：todo_id -> tooltip 文本
-        self._source_tooltip_cache: Dict[str, str] = {}
+        # 树项“标记”角色：用于区分逻辑块头等非 Todo 树项。
+        # 注意：必须与 DIMMED_ROLE 分离，避免 role 冲突导致 block_header 被误当成 dimmed。
+        self.MARKER_ROLE: int = int(Qt.ItemDataRole.UserRole) + 20
+        self._node_highlighter = TodoTreeNodeHighlighter(
+            self.tree,
+            rich_segments_role=self.RICH_SEGMENTS_ROLE,
+            dimmed_role=self.DIMMED_ROLE,
+        )
+        self._source_tooltip_provider = TodoTreeSourceTooltipProvider(
+            graph_expand_dependency_getter
+        )
 
         # 槽连接
         self.tree.itemChanged.connect(self._on_item_changed)
@@ -122,22 +131,50 @@ class TodoTreeManager(QtCore.QObject):
     def get_item_by_id(self, todo_id: str) -> Optional[QtWidgets.QTreeWidgetItem]:
         return self._item_map.get(todo_id)
 
+    def set_leaf_checked_silent(self, todo_id: str, checked: bool) -> None:
+        """静默设置叶子步骤的勾选状态：更新 todo_states 与样式，但不触发 todo_checked 信号。
+
+        典型使用场景：
+        - 识别回填（定位镜头后批量自动勾选历史步骤）应只更新当前会话的 UI 状态，
+          不应触发外层“每次勾选都立即落盘”的持久化路径。
+
+        注意：
+        - 仅作用于“叶子步骤”（无 children 且非图根语义）；父级/分组节点的三态由叶子状态反推。
+        """
+        item = self._item_map.get(todo_id)
+        todo = self.todo_map.get(todo_id)
+        if item is None or todo is None:
+            return
+
+        detail_type = (todo.detail_info or {}).get("type", "")
+        is_leaf_like = (not todo.children) and not StepTypeRules.is_graph_root(detail_type)
+        if not is_leaf_like:
+            return
+
+        self.todo_states[todo_id] = bool(checked)
+        self.runtime_state.clear(todo_id)
+        self.update_item_incrementally(item, todo)
+
+    def is_node_filter_active(self) -> bool:
+        return bool(self._node_filter_active)
+
+    def get_current_node_highlight_ids(self) -> set[str]:
+        return set(self._current_node_highlight_ids)
+
+    def is_block_header_item(self, item: QtWidgets.QTreeWidgetItem) -> bool:
+        if item is None:
+            return False
+        marker = item.data(0, self.MARKER_ROLE)
+        return marker == "block_header"
+
     # === 节点相关步骤查询与高亮 ===
 
     def get_related_todos_for_node(self, node_id: str) -> List[TodoItem]:
         """返回与给定节点 ID 相关的所有 Todo（创建/配置/连线等）。"""
-        if not node_id:
-            return []
-        normalized = str(node_id)
-        related: List[TodoItem] = []
-        for todo in self.todos:
-            info = todo.detail_info or {}
-            detail_type = info.get("type", "")
-            if not StepTypeRules.is_graph_step(detail_type):
-                continue
-            if self._is_todo_related_to_node(info, normalized):
-                related.append(todo)
-        return related
+        return self._node_highlighter.collect_related_todos_for_node(
+            node_id,
+            todos=self.todos,
+        )
 
     def highlight_steps_for_node(self, node_id: str, anchor_todo_id: Optional[str] = None) -> None:
         """根据节点 ID 高亮任务树中与该节点相关的步骤。
@@ -148,48 +185,127 @@ class TodoTreeManager(QtCore.QObject):
             self.clear_node_highlight()
             return
 
-        normalized = str(node_id)
-        # 先清理旧的高亮与置灰效果
-        self.clear_node_highlight()
+        related_todos = self.get_related_todos_for_node(node_id)
+        new_highlight_ids = {
+            todo.todo_id for todo in related_todos if todo.todo_id in self._item_map
+        }
+        if not new_highlight_ids:
+            self.clear_node_highlight()
+            return
 
-        new_highlight_ids: set[str] = set()
-        for todo in self.todos:
-            info = todo.detail_info or {}
-            detail_type = info.get("type", "")
-            if not StepTypeRules.is_graph_step(detail_type):
-                continue
-            if not self._is_todo_related_to_node(info, normalized):
-                continue
-            todo_id = todo.todo_id
-            item = self._item_map.get(todo_id)
-            if item is None:
-                continue
-            is_anchor = bool(anchor_todo_id and todo_id == anchor_todo_id)
-            self._apply_node_highlight_to_item(item, is_anchor=is_anchor)
-            new_highlight_ids.add(todo_id)
-        self._current_node_highlight_ids = new_highlight_ids
-
-        # 置灰所有与当前节点无关的步骤，突出相关步骤
-        if new_highlight_ids:
-            self._dim_unrelated_steps(new_highlight_ids)
-            self._node_filter_active = True
+        resolved_anchor_id: Optional[str] = None
+        if anchor_todo_id and anchor_todo_id in new_highlight_ids:
+            resolved_anchor_id = anchor_todo_id
         else:
-            self._node_filter_active = False
+            # 保持确定性：避免 set 的非稳定顺序导致锚点跳动
+            resolved_anchor_id = sorted(new_highlight_ids)[0]
+
+        old_highlight_ids = set(self._current_node_highlight_ids)
+        old_anchor_id = self._current_node_anchor_todo_id
+        had_filter_active = bool(self._node_filter_active)
+
+        # 纯粹重复点击同一节点/同一锚点：直接短路，避免无意义的 repaint
+        if (
+            had_filter_active
+            and old_highlight_ids == new_highlight_ids
+            and old_anchor_id == resolved_anchor_id
+        ):
+            return
+
+        self.tree.setUpdatesEnabled(False)
+
+        if not had_filter_active:
+            # 第一次进入“节点过滤”模式：需要为整棵树写入 dimmed 标记
+            for todo_id, item in self._item_map.items():
+                self._set_item_dimmed(item, dimmed=(todo_id not in new_highlight_ids))
+
+            for todo_id in new_highlight_ids:
+                item = self._item_map.get(todo_id)
+                if item is None:
+                    continue
+                self._node_highlighter.apply_node_highlight_to_item(
+                    item,
+                    is_anchor=(todo_id == resolved_anchor_id),
+                )
+        else:
+            # 差量更新：避免每次点击都全树清空/全树置灰
+            ids_to_remove = old_highlight_ids - new_highlight_ids
+            ids_to_add = new_highlight_ids - old_highlight_ids
+
+            for todo_id in ids_to_remove:
+                item = self._item_map.get(todo_id)
+                if item is None:
+                    continue
+                self._node_highlighter.clear_node_highlight_from_item(item)
+                self._set_item_dimmed(item, dimmed=True)
+
+            for todo_id in ids_to_add:
+                item = self._item_map.get(todo_id)
+                if item is None:
+                    continue
+                self._set_item_dimmed(item, dimmed=False)
+                self._node_highlighter.apply_node_highlight_to_item(
+                    item,
+                    is_anchor=(todo_id == resolved_anchor_id),
+                )
+
+            # 锚点变化时，仅更新受影响的两项，避免重算整套高亮
+            if resolved_anchor_id != old_anchor_id:
+                if old_anchor_id and old_anchor_id in new_highlight_ids:
+                    old_anchor_item = self._item_map.get(old_anchor_id)
+                    if old_anchor_item is not None:
+                        self._node_highlighter.apply_node_highlight_to_item(
+                            old_anchor_item,
+                            is_anchor=False,
+                        )
+                if resolved_anchor_id and resolved_anchor_id in new_highlight_ids:
+                    new_anchor_item = self._item_map.get(resolved_anchor_id)
+                    if new_anchor_item is not None:
+                        self._node_highlighter.apply_node_highlight_to_item(
+                            new_anchor_item,
+                            is_anchor=True,
+                        )
+
+        self.tree.setUpdatesEnabled(True)
+
+        self._current_node_highlight_ids = set(new_highlight_ids)
+        self._current_node_anchor_todo_id = resolved_anchor_id
+        self._node_filter_active = True
 
     def clear_node_highlight(self) -> None:
         """清除因“节点选中”产生的所有步骤高亮与置灰效果，恢复默认样式。"""
         if not self._current_node_highlight_ids and not self._node_filter_active:
             return
 
-        # 清空内部记录的高亮 ID 集合
+        self.tree.setUpdatesEnabled(False)
+
+        # 清理高亮样式（仅作用于此前高亮的少量步骤）
+        for todo_id in list(self._current_node_highlight_ids):
+            item = self._item_map.get(todo_id)
+            if item is None:
+                continue
+            self._node_highlighter.clear_node_highlight_from_item(item)
+
+        # 退出过滤模式：清理所有 Todo 树项上的 dimmed 标记（仅写 role，不触碰前景色）
+        if self._node_filter_active:
+            for item in self._item_map.values():
+                if bool(item.data(0, self.DIMMED_ROLE)):
+                    item.setData(0, self.DIMMED_ROLE, None)
+
         self._current_node_highlight_ids.clear()
+        self._current_node_anchor_todo_id = None
         self._node_filter_active = False
 
-        # 清除所有树项上的置灰标记
-        self._clear_dimmed_flags()
+        self.tree.setUpdatesEnabled(True)
 
-        # 通过整树样式刷新，恢复所有步骤的基础样式与富文本 tokens
-        self.refresh_entire_tree_display()
+    def _set_item_dimmed(self, item: QtWidgets.QTreeWidgetItem, *, dimmed: bool) -> None:
+        """写入/清理 dimmed_role（只做差量写入）。"""
+        if item is None:
+            return
+        current_dimmed = bool(item.data(0, self.DIMMED_ROLE))
+        if current_dimmed == bool(dimmed):
+            return
+        item.setData(0, self.DIMMED_ROLE, True if dimmed else None)
 
     def refresh_tree(self) -> None:
         self._refresh_gate.set_refreshing(True)
@@ -198,6 +314,8 @@ class TodoTreeManager(QtCore.QObject):
         # 清理依赖于现有树项的 UI 状态，避免在整树重建后访问已删除的 QTreeWidgetItem。
         self._current_block_header_item = None
         self._current_node_highlight_ids.clear()
+        self._current_node_anchor_todo_id = None
+        self._node_filter_active = False
 
         self.tree.clear()
         self._item_map.clear()
@@ -228,10 +346,6 @@ class TodoTreeManager(QtCore.QObject):
             self._refresh_item_and_children(root)
         self._refresh_gate.set_refreshing(False)
         self.tree.setUpdatesEnabled(True)
-
-    def _refresh_entire_tree_display(self) -> None:
-        """兼容旧调用，统一走公开刷新入口。"""
-        self.refresh_entire_tree_display()
 
     def ensure_tokens_for_todo(self, todo_id: str) -> list | None:
         item = self._item_map.get(todo_id)
@@ -419,6 +533,8 @@ class TodoTreeManager(QtCore.QObject):
                 group.block_index,
                 group_index,
                 block_color_hex,
+                rich_segments_role=self.RICH_SEGMENTS_ROLE,
+                marker_role=self.MARKER_ROLE,
             )
             flow_root_item.addChild(header_item)
             # 逻辑块分组默认展开，方便用户一眼看到块内所有步骤
@@ -588,7 +704,7 @@ class TodoTreeManager(QtCore.QObject):
             item.setForeground(0, QtGui.QBrush(QtGui.QColor(color)))
             # 图相关步骤：为任务树项附加“源码定位”提示，悬停即可查看对应节点图文件与大致行号。
             if StepTypeRules.is_graph_step(detail_type):
-                tooltip_text = self._get_source_tooltip_for_todo(todo)
+                tooltip_text = self._source_tooltip_provider.get_tooltip_for_todo(todo)
                 item.setToolTip(0, tooltip_text)
             else:
                 item.setToolTip(0, "")
@@ -601,170 +717,6 @@ class TodoTreeManager(QtCore.QObject):
 
     def _get_task_icon(self, todo: TodoItem) -> str:
         return DetailTypeIcons.get_icon(todo.task_type, todo.detail_info)
-
-    # === 内部：源码定位提示 ===
-
-    def _get_source_tooltip_for_todo(self, todo: TodoItem) -> str:
-        """为图相关步骤构建源码定位提示（悬停时显示）。
-
-        规则：
-        - 依赖 detail_info.graph_id 解析节点图；
-        - 根据 detail_info 中的节点 ID 字段抽取关联节点；
-        - 对每个节点优先使用 source_lineno/source_end_lineno 限定搜索范围，
-          在对应图源码片段内按节点 title 做一次字符串搜索，若命中则以该行作为主行号；
-        - 若无法解析图或节点行号，则退回空字符串，不影响正常 tooltip。
-        """
-        cached = self._source_tooltip_cache.get(todo.todo_id)
-        if isinstance(cached, str):
-            return cached
-
-        detail_info = todo.detail_info or {}
-        graph_id_raw = detail_info.get("graph_id", "")
-        graph_id = str(graph_id_raw or "")
-        if not graph_id:
-            self._source_tooltip_cache[todo.todo_id] = ""
-            return ""
-
-        if self._graph_expand_dependency_getter is None:
-            self._source_tooltip_cache[todo.todo_id] = ""
-            return ""
-
-        dependencies = self._graph_expand_dependency_getter()
-        if not isinstance(dependencies, tuple) or len(dependencies) != 2:
-            self._source_tooltip_cache[todo.todo_id] = ""
-            return ""
-
-        _package, resource_manager = dependencies
-        if resource_manager is None:
-            self._source_tooltip_cache[todo.todo_id] = ""
-            return ""
-
-        graph_payload = resource_manager.load_resource(ResourceType.GRAPH, graph_id)
-        if not graph_payload:
-            self._source_tooltip_cache[todo.todo_id] = ""
-            return ""
-
-        graph_data = graph_payload.get("data", graph_payload)
-        model = GraphModel.deserialize(graph_data)
-
-        graph_file_path = resource_manager.get_graph_file_path(graph_id)
-        file_display = ""
-        if graph_file_path is not None:
-            file_display = str(graph_file_path)
-
-        related_node_ids = self._collect_related_node_ids(detail_info)
-        if not related_node_ids:
-            if not file_display:
-                self._source_tooltip_cache[todo.todo_id] = ""
-                return ""
-            lines: List[str] = []
-            if graph_id in self._graph_source_lines_cache:
-                lines = self._graph_source_lines_cache[graph_id]
-            else:
-                if graph_file_path is not None and graph_file_path.exists():
-                    text = graph_file_path.read_text(encoding="utf-8")
-                    lines = text.splitlines()
-                    self._graph_source_lines_cache[graph_id] = lines
-            header_lines = [f"节点图文件：{file_display}"]
-            if lines:
-                header_lines.append("（该步骤未直接关联具体节点，可在文件中按节点名搜索）")
-            tooltip_value = "\n".join(header_lines)
-            self._source_tooltip_cache[todo.todo_id] = tooltip_value
-            return tooltip_value
-
-        lines_for_graph: List[str] = []
-        if graph_id in self._graph_source_lines_cache:
-            lines_for_graph = self._graph_source_lines_cache[graph_id]
-        else:
-            if graph_file_path is not None and graph_file_path.exists():
-                text = graph_file_path.read_text(encoding="utf-8")
-                lines_for_graph = text.splitlines()
-                self._graph_source_lines_cache[graph_id] = lines_for_graph
-
-        tooltip_lines: List[str] = []
-        if file_display:
-            tooltip_lines.append(f"节点图文件：{file_display}")
-        tooltip_lines.append("关联节点：")
-
-        for node_identifier in related_node_ids:
-            node_object = model.nodes.get(str(node_identifier))
-            if node_object is None:
-                tooltip_lines.append(f"- 节点 id={node_identifier}（未在当前图中找到）")
-                continue
-
-            title_text = str(getattr(node_object, "title", "") or "")
-            category_text = str(getattr(node_object, "category", "") or "")
-            source_start = int(getattr(node_object, "source_lineno", 0) or 0)
-            source_end = int(getattr(node_object, "source_end_lineno", 0) or 0)
-
-            header_parts: List[str] = []
-            if title_text:
-                header_parts.append(title_text)
-            if category_text:
-                header_parts.append(f"（{category_text}）")
-            header_parts.append(f" id={node_object.id}")
-            header_text = "".join(header_parts)
-
-            best_line = source_start if source_start > 0 else 0
-            if lines_for_graph:
-                search_start = source_start if source_start > 0 else 1
-                if search_start < 1:
-                    search_start = 1
-                search_end = source_end if source_end >= search_start else search_start
-                if search_end > len(lines_for_graph):
-                    search_end = len(lines_for_graph)
-                if search_end < search_start:
-                    search_end = search_start
-                found_line = 0
-                if title_text:
-                    for line_number in range(search_start, search_end + 1):
-                        line_text = lines_for_graph[line_number - 1]
-                        if title_text in line_text:
-                            found_line = line_number
-                            break
-                if found_line > 0:
-                    best_line = found_line
-
-            if best_line > 0:
-                line_desc = f"第 {best_line} 行"
-            else:
-                line_desc = "行号未知（节点未携带可用的源代码行信息）"
-
-            tooltip_lines.append(f"- {header_text}")
-            tooltip_lines.append(f"  源码行号：{line_desc}")
-
-        tooltip_text = "\n".join(tooltip_lines)
-        self._source_tooltip_cache[todo.todo_id] = tooltip_text
-        return tooltip_text
-
-    @staticmethod
-    def _collect_related_node_ids(detail_info: Dict[str, Any]) -> List[str]:
-        """从 detail_info 中提取与当前步骤直接相关的节点 ID 列表。"""
-        candidate_keys = [
-            "node_id",
-            "src_node",
-            "dst_node",
-            "target_node_id",
-            "data_node_id",
-            "prev_node_id",
-            "node1_id",
-            "node2_id",
-            "branch_node_id",
-        ]
-        result: List[str] = []
-        for key in candidate_keys:
-            if key not in detail_info:
-                continue
-            raw_value = detail_info.get(key)
-            if raw_value is None:
-                continue
-            value_text = str(raw_value)
-            if not value_text:
-                continue
-            if value_text in result:
-                continue
-            result.append(value_text)
-        return result
 
     # === 内部：块分组高亮 ===
 
@@ -795,7 +747,7 @@ class TodoTreeManager(QtCore.QObject):
         """沿父链向上查找最近的块分组头节点。"""
         current_item = start_item
         while current_item is not None:
-            marker = current_item.data(0, Qt.ItemDataRole.UserRole + 2)
+            marker = current_item.data(0, self.MARKER_ROLE)
             if marker == "block_header":
                 return current_item
             current_item = current_item.parent()
@@ -825,96 +777,6 @@ class TodoTreeManager(QtCore.QObject):
         else:
             header_item.setBackground(0, QtGui.QBrush())
         header_item.setForeground(0, QtGui.QBrush(QtGui.QColor(color_hex)))
-
-    def _apply_node_highlight_to_item(
-        self,
-        item: QtWidgets.QTreeWidgetItem,
-        *,
-        is_anchor: bool,
-    ) -> None:
-        """为与当前节点相关的步骤应用高亮样式（背景 + 文本前缀）。"""
-        if item is None:
-            return
-
-        # 1) 行背景高亮
-        background_color = ThemeColors.PRIMARY_LIGHT if is_anchor else ThemeColors.BG_SELECTED
-        item.setBackground(0, QtGui.QBrush(QtGui.QColor(background_color)))
-
-        # 2) 文本加粗（锚点步骤更醒目）
-        font = item.font(0)
-        if is_anchor:
-            font.setBold(True)
-        item.setFont(0, font)
-
-        # 3) 若存在富文本 tokens，则在最前面插入一个前缀标记，避免改动原文案
-        tokens = item.data(0, self.RICH_SEGMENTS_ROLE)
-        if isinstance(tokens, list):
-            new_tokens = []
-            if is_anchor:
-                new_tokens.append(
-                    {
-                        "text": "★ ",
-                        "color": ThemeColors.PRIMARY,
-                        "bold": True,
-                    }
-                )
-            else:
-                new_tokens.append(
-                    {
-                        "text": "• ",
-                        "color": ThemeColors.TEXT_SECONDARY,
-                    }
-                )
-            new_tokens.extend(tokens)
-            item.setData(0, self.RICH_SEGMENTS_ROLE, new_tokens)
-
-    def _dim_unrelated_steps(self, related_ids: set[str]) -> None:
-        """将当前树中除 related_ids 以外的步骤统一置灰，强化节点相关步骤的对比度。"""
-        root = self.tree.invisibleRootItem()
-        dim_color_hex = ThemeColors.TEXT_DISABLED
-
-        if root is None:
-            return
-
-        stack: List[QtWidgets.QTreeWidgetItem] = [root]
-        while stack:
-            parent_item = stack.pop()
-            for index in range(parent_item.childCount()):
-                item = parent_item.child(index)
-                if item is None:
-                    continue
-                stack.append(item)
-
-                todo_id = item.data(0, Qt.ItemDataRole.UserRole)
-                if not todo_id or todo_id in related_ids:
-                    continue
-                if todo_id not in self.todo_map:
-                    continue
-
-                # 统一使用禁用文本色作为前景色（非富文本项直接生效，富文本项作为兜底）
-                item.setForeground(
-                    0,
-                    QtGui.QBrush(QtGui.QColor(dim_color_hex)),
-                )
-
-                # 为富文本委托设置“置灰标记”，在绘制时统一将 token 颜色替换为禁用文本色。
-                item.setData(0, self.DIMMED_ROLE, True)
-
-    def _clear_dimmed_flags(self) -> None:
-        """清除整棵树上的置灰标记。"""
-        root = self.tree.invisibleRootItem()
-        if root is None:
-            return
-
-        stack: List[QtWidgets.QTreeWidgetItem] = [root]
-        while stack:
-            parent_item = stack.pop()
-            for index in range(parent_item.childCount()):
-                item = parent_item.child(index)
-                if item is None:
-                    continue
-                stack.append(item)
-                item.setData(0, self.DIMMED_ROLE, None)
 
     def find_template_graph_root_for_todo(self, start_todo_id: str) -> Optional[TodoItem]:
         """公开定位接口：先尝试沿树项父链，再回退至 todo_id 链路。"""
@@ -949,30 +811,6 @@ class TodoTreeManager(QtCore.QObject):
             self.todo_map,
             graph_support=self._graph_support,
         )
-
-    @staticmethod
-    def _is_todo_related_to_node(detail_info: Dict[str, Any], node_id: str) -> bool:
-        """判断给定 detail_info 是否与指定节点 ID 存在直接关联。"""
-        if not node_id:
-            return False
-        normalized = str(node_id)
-        candidate_ids = [
-            detail_info.get("node_id"),
-            detail_info.get("dst_node"),
-            detail_info.get("src_node"),
-            detail_info.get("target_node_id"),
-            detail_info.get("data_node_id"),
-            detail_info.get("prev_node_id"),
-            detail_info.get("node1_id"),
-            detail_info.get("node2_id"),
-            detail_info.get("branch_node_id"),
-        ]
-        for candidate in candidate_ids:
-            if candidate is None:
-                continue
-            if str(candidate) == normalized:
-                return True
-        return False
 
     # === 懒加载 ===
 

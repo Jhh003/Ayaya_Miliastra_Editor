@@ -11,6 +11,36 @@ from app.ui.graph.library_pages.library_scaffold import LibraryChangeEvent
 class ImmediatePersistMixin:
     """统一处理各种库页/面板发出的“需要立即持久化”的请求。"""
 
+    def _refresh_library_pages_after_property_panel_update(self) -> None:
+        """在右侧属性面板上下文发生变化后，按当前 ViewMode 刷新需要联动的库页列表。
+
+        设计目标：
+        - 复用一套“刷新策略”，避免在多个入口分别复制 `refresh_templates/refresh_instances` 的分支；
+        - 保持实体摆放模式下的上下文稳定：编辑实体实例时不要刷新元件库来抢占右侧上下文。
+        """
+        current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
+
+        # 模板/实例/关卡实体属性面板共用同一条“数据更新”链路，但不同模式下的
+        # 刷新需求并不相同：
+        # - 在元件库或其它以模板为主的视图中，仍需要刷新元件列表以反映名称/描述等改动；
+        # - 在实体摆放视图中，编辑的是实体实例（object_type == "instance"）时，
+        #   不应触发元件库的选中事件去抢占右侧属性上下文，否则会出现
+        #   “修改实体 GUID → 右侧突然切回某个元件属性”的错觉。
+        if current_view_mode != ViewMode.PLACEMENT:
+            # 非实体摆放模式下，保持原有行为：始终刷新元件库列表。
+            self.template_widget.refresh_templates()
+        else:
+            # 实体摆放模式中，仅当当前属性面板上下文不是实体实例时，才刷新元件库。
+            # 例如：通过任务清单或节点图库在此模式下只读查看某个元件。
+            if getattr(self.property_panel, "object_type", "") != "instance":
+                self.template_widget.refresh_templates()
+
+        if (
+            current_view_mode == ViewMode.PLACEMENT
+            and getattr(self.property_panel, "object_type", "") == "instance"
+        ):
+            self.placement_widget.refresh_instances()
+
     def _on_library_page_data_changed(self, event: LibraryChangeEvent) -> None:
         """统一处理库/列表页发出的 LibraryChangeEvent。
 
@@ -66,28 +96,7 @@ class ImmediatePersistMixin:
 
     def _on_data_updated(self) -> None:
         """右侧属性面板的数据更新"""
-        current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-
-        # 模板/实例/关卡实体属性面板共用同一条“数据更新”链路，但不同模式下的
-        # 刷新需求并不相同：
-        # - 在元件库或其它以模板为主的视图中，仍需要刷新元件列表以反映名称/描述等改动；
-        # - 在实体摆放视图中，编辑的是实体实例（object_type == "instance"）时，
-        #   不应触发元件库的选中事件去抢占右侧属性上下文，否则会出现
-        #   “修改实体 GUID → 右侧突然切回某个元件属性”的错觉。
-        if current_view_mode != ViewMode.PLACEMENT:
-            # 非实体摆放模式下，保持原有行为：始终刷新元件库列表。
-            self.template_widget.refresh_templates()
-        else:
-            # 实体摆放模式中，仅当当前属性面板上下文不是实体实例时，才刷新元件库。
-            # 例如：通过任务清单或节点图库在此模式下只读查看某个元件。
-            if getattr(self.property_panel, "object_type", "") != "instance":
-                self.template_widget.refresh_templates()
-
-        if (
-            current_view_mode == ViewMode.PLACEMENT
-            and getattr(self.property_panel, "object_type", "") == "instance"
-        ):
-            self.placement_widget.refresh_instances()
+        self._refresh_library_pages_after_property_panel_update()
 
         # 右侧属性面板的任何改动都应立即持久化到资源库与存档索引，
         # 避免仅停留在 UI 模型或内存视图中。

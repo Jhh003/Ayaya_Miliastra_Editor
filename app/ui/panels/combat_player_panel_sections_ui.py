@@ -13,7 +13,9 @@ from PyQt6 import QtWidgets
 from engine.graph.models.entity_templates import get_all_variable_types
 from app.ui.foundation.theme_manager import Sizes
 from app.ui.foundation.toggle_switch import ToggleSwitch
+from app.ui.forms.schema_bound_form import FormComboOption, FormFieldSpec, SchemaBoundForm
 from app.ui.panels.combat_ability_components import CombatSettingsSection
+from app.ui.panels.panel_dict_utils import ensure_dict_field
 from app.ui.panels.template_instance.graphs_tab import GraphsTab
 from app.ui.widgets.two_row_field_table_widget import TwoRowFieldTableWidget
 
@@ -42,6 +44,7 @@ class CombatPlayerPanelSectionsUIMixin:
     resurrection_point_rule_combo: QtWidgets.QComboBox
     resurrection_health_ratio_spin: QtWidgets.QDoubleSpinBox
     special_knockout_pct_spin: QtWidgets.QDoubleSpinBox
+    _player_resurrection_schema_form: SchemaBoundForm
 
     role_play_own_sound_switch: ToggleSwitch
     role_attributes_edit: QtWidgets.QPlainTextEdit
@@ -139,52 +142,151 @@ class CombatPlayerPanelSectionsUIMixin:
         resurrection_layout = QtWidgets.QFormLayout(resurrection_group)
         resurrection_layout.setSpacing(Sizes.SPACING_SMALL)
 
-        self.allow_resurrection_check = ToggleSwitch()
-        resurrection_layout.addRow("允许复苏:", self.allow_resurrection_check)
+        def _mark_player_editor_changed(_: object) -> None:
+            # 约定：表单字段变更即视为模板已修改，交由上层持久化链路处理。
+            self._mark_template_modified()
+            self.data_changed.emit()
 
-        self.show_resurrection_ui_check = ToggleSwitch()
-        resurrection_layout.addRow("显示复苏页面:", self.show_resurrection_ui_check)
+        def _get_resurrection_dict() -> dict:
+            raw_value = self.player_editor.player.get("resurrection", {})
+            return raw_value if isinstance(raw_value, dict) else {}
 
-        self.resurrection_time_spin = QtWidgets.QDoubleSpinBox()
-        self.resurrection_time_spin.setRange(0.0, 9999.0)
-        self.resurrection_time_spin.setSingleStep(0.5)
-        self.resurrection_time_spin.setSuffix(" 秒")
-        self.resurrection_time_spin.setValue(5.0)
-        resurrection_layout.addRow("复苏耗时:", self.resurrection_time_spin)
+        def _set_resurrection_value(key: str, value: object) -> None:
+            resurrection_dict = ensure_dict_field(self.player_editor.player, "resurrection")
+            resurrection_dict[key] = value
 
-        self.auto_resurrection_check = ToggleSwitch()
-        resurrection_layout.addRow("自动复苏:", self.auto_resurrection_check)
+        def _get_points_text(_: dict) -> str:
+            points_value = _get_resurrection_dict().get("points", [])
+            if isinstance(points_value, list):
+                return "\n".join(str(item).strip() for item in points_value if str(item).strip())
+            return str(points_value).strip()
 
-        self.resurrection_count_limit_check = ToggleSwitch()
-        resurrection_layout.addRow("复苏次数限制:", self.resurrection_count_limit_check)
+        def _set_points_text(_: dict, text_value: object) -> None:
+            text = str(text_value or "")
+            points = [line.strip() for line in text.split("\n") if line.strip()]
+            _set_resurrection_value("points", points)
 
-        self.resurrection_count_spin = QtWidgets.QSpinBox()
-        self.resurrection_count_spin.setRange(0, 999)
-        self.resurrection_count_spin.setValue(3)
-        resurrection_layout.addRow("复苏次数:", self.resurrection_count_spin)
+        resurrection_field_specs = [
+            FormFieldSpec(
+                key="allow_resurrection",
+                label="允许复苏:",
+                kind="bool",
+                default=False,
+                use_toggle_switch=True,
+                get_value=lambda _model: _get_resurrection_dict().get("allow_resurrection", False) is True,
+                set_value=lambda _model, value: _set_resurrection_value("allow_resurrection", value is True),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="show_ui",
+                label="显示复苏页面:",
+                kind="bool",
+                default=False,
+                use_toggle_switch=True,
+                get_value=lambda _model: _get_resurrection_dict().get("show_ui", False) is True,
+                set_value=lambda _model, value: _set_resurrection_value("show_ui", value is True),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="time",
+                label="复苏耗时:",
+                kind="double_spin",
+                default=5.0,
+                minimum_float=0.0,
+                maximum_float=9999.0,
+                single_step_float=0.5,
+                suffix=" 秒",
+                get_value=lambda _model: float(_get_resurrection_dict().get("time", 5.0)),
+                set_value=lambda _model, value: _set_resurrection_value("time", float(value)),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="auto_resurrection",
+                label="自动复苏:",
+                kind="bool",
+                default=False,
+                use_toggle_switch=True,
+                get_value=lambda _model: _get_resurrection_dict().get("auto_resurrection", False) is True,
+                set_value=lambda _model, value: _set_resurrection_value("auto_resurrection", value is True),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="count_limit",
+                label="复苏次数限制:",
+                kind="bool",
+                default=False,
+                use_toggle_switch=True,
+                get_value=lambda _model: _get_resurrection_dict().get("count_limit", False) is True,
+                set_value=lambda _model, value: _set_resurrection_value("count_limit", value is True),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="count",
+                label="复苏次数:",
+                kind="int_spin",
+                default=3,
+                minimum_int=0,
+                maximum_int=999,
+                get_value=lambda _model: int(_get_resurrection_dict().get("count", 3)),
+                set_value=lambda _model, value: _set_resurrection_value("count", int(value)),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="points_text",
+                label="复苏点列表:",
+                kind="plain_text",
+                default="",
+                placeholder="复苏点列表，每行一个ID",
+                max_height=60,
+                get_value=_get_points_text,
+                set_value=_set_points_text,
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="point_rule",
+                label="复苏点选取规则:",
+                kind="combo",
+                default="nearest",
+                combo_options=[
+                    FormComboOption("最近的复苏点", "nearest"),
+                    FormComboOption("最新激活的复苏点", "latest_activated"),
+                    FormComboOption("优先级最高的复苏点", "highest_priority"),
+                    FormComboOption("随机复苏点", "random"),
+                ],
+                get_value=lambda _model: str(_get_resurrection_dict().get("point_rule", "nearest")),
+                set_value=lambda _model, value: _set_resurrection_value("point_rule", str(value)),
+                on_changed=_mark_player_editor_changed,
+            ),
+            FormFieldSpec(
+                key="health_ratio",
+                label="复苏后生命比例(%):",
+                kind="double_spin",
+                default=50.0,
+                minimum_float=0.0,
+                maximum_float=100.0,
+                single_step_float=5.0,
+                suffix=" %",
+                get_value=lambda _model: float(_get_resurrection_dict().get("health_ratio", 50.0)),
+                set_value=lambda _model, value: _set_resurrection_value("health_ratio", float(value)),
+                on_changed=_mark_player_editor_changed,
+            ),
+        ]
 
-        self.resurrection_points_edit = QtWidgets.QPlainTextEdit()
-        self.resurrection_points_edit.setPlaceholderText("复苏点列表，每行一个ID")
-        self.resurrection_points_edit.setMaximumHeight(60)
-        resurrection_layout.addRow("复苏点列表:", self.resurrection_points_edit)
-
-        self.resurrection_point_rule_combo = QtWidgets.QComboBox()
-        self.resurrection_point_rule_combo.addItems(
-            [
-                "最近的复苏点",
-                "最新激活的复苏点",
-                "优先级最高的复苏点",
-                "随机复苏点",
-            ]
+        self._player_resurrection_schema_form = SchemaBoundForm(
+            resurrection_group,
+            resurrection_field_specs,
+            self.player_editor.player,
         )
-        resurrection_layout.addRow("复苏点选取规则:", self.resurrection_point_rule_combo)
-
-        self.resurrection_health_ratio_spin = QtWidgets.QDoubleSpinBox()
-        self.resurrection_health_ratio_spin.setRange(0.0, 100.0)
-        self.resurrection_health_ratio_spin.setSingleStep(5.0)
-        self.resurrection_health_ratio_spin.setSuffix(" %")
-        self.resurrection_health_ratio_spin.setValue(50.0)
-        resurrection_layout.addRow("复苏后生命比例(%):", self.resurrection_health_ratio_spin)
+        self._player_resurrection_schema_form.build_into(resurrection_layout)
+        self.allow_resurrection_check = self._player_resurrection_schema_form.widgets["allow_resurrection"]  # type: ignore[assignment]
+        self.show_resurrection_ui_check = self._player_resurrection_schema_form.widgets["show_ui"]  # type: ignore[assignment]
+        self.resurrection_time_spin = self._player_resurrection_schema_form.widgets["time"]  # type: ignore[assignment]
+        self.auto_resurrection_check = self._player_resurrection_schema_form.widgets["auto_resurrection"]  # type: ignore[assignment]
+        self.resurrection_count_limit_check = self._player_resurrection_schema_form.widgets["count_limit"]  # type: ignore[assignment]
+        self.resurrection_count_spin = self._player_resurrection_schema_form.widgets["count"]  # type: ignore[assignment]
+        self.resurrection_points_edit = self._player_resurrection_schema_form.widgets["points_text"]  # type: ignore[assignment]
+        self.resurrection_point_rule_combo = self._player_resurrection_schema_form.widgets["point_rule"]  # type: ignore[assignment]
+        self.resurrection_health_ratio_spin = self._player_resurrection_schema_form.widgets["health_ratio"]  # type: ignore[assignment]
 
         scroll_layout.addWidget(resurrection_group)
 
@@ -335,21 +437,6 @@ class CombatPlayerPanelSectionsUIMixin:
         self.level_spin.valueChanged.connect(self._on_level_changed)
         self.spawn_point_combo.currentTextChanged.connect(self._on_spawn_point_changed)
         self.profession_combo.currentTextChanged.connect(self._on_profession_changed)
-        self.allow_resurrection_check.stateChanged.connect(self._on_allow_resurrection_changed)
-        self.show_resurrection_ui_check.stateChanged.connect(self._on_show_resurrection_ui_changed)
-        self.resurrection_time_spin.valueChanged.connect(self._on_resurrection_time_changed)
-        self.auto_resurrection_check.stateChanged.connect(self._on_auto_resurrection_changed)
-        self.resurrection_count_limit_check.stateChanged.connect(
-            self._on_resurrection_count_limit_changed
-        )
-        self.resurrection_count_spin.valueChanged.connect(self._on_resurrection_count_changed)
-        self.resurrection_points_edit.textChanged.connect(self._on_resurrection_points_changed)
-        self.resurrection_point_rule_combo.currentIndexChanged.connect(
-            self._on_resurrection_point_rule_changed
-        )
-        self.resurrection_health_ratio_spin.valueChanged.connect(
-            self._on_resurrection_health_ratio_changed
-        )
         self.special_knockout_pct_spin.valueChanged.connect(self._on_special_knockout_changed)
         self.player_custom_variable_table.field_changed.connect(
             self._on_player_custom_variables_changed

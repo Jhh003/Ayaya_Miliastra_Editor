@@ -44,6 +44,7 @@ class CompositeNodePreviewWidget(QtWidgets.QWidget):
 
     def _connect_signals(self) -> None:
         self.pin_panel.pin_name_changed.connect(self._handle_pin_name_changed)
+        self.pin_panel.pin_type_changed.connect(self._handle_pin_type_changed)
         self._controller.pin_updated.connect(self.pin_updated)
         self._controller.pins_merge_finished.connect(self._show_merge_success)
 
@@ -67,6 +68,16 @@ class CompositeNodePreviewWidget(QtWidgets.QWidget):
                 self,
                 "错误",
                 error or "无法重命名引脚",
+            )
+            self.pin_panel.refresh()
+
+    def _handle_pin_type_changed(self, pin: VirtualPinConfig, new_type: str) -> None:
+        success, error = self._controller.update_pin_type(pin, new_type)
+        if not success:
+            dialog_utils.show_warning_dialog(
+                self,
+                "错误",
+                error or "无法修改引脚类型",
             )
             self.pin_panel.refresh()
 

@@ -272,15 +272,14 @@ class TodoDetailPanel(QtWidgets.QWidget):
     @property
     def todo_map(self):
         """为适配器提供统一的 todo_map 访问入口。
-        优先从宿主的 TreeManager 读取（权威来源），回退到宿主自身的 todo_map，最后回退为空映射。
+        统一从宿主的 TreeManager 读取（权威来源）。
         """
         host = self.host_list_widget
-        if host is not None:
-            if hasattr(host, "tree_manager") and hasattr(host.tree_manager, "todo_map"):
-                return host.tree_manager.todo_map
-            if hasattr(host, "todo_map"):
-                return host.todo_map
-        return {}
+        if host is None:
+            return {}
+        if host.tree_manager is None:
+            return {}
+        return host.tree_manager.todo_map
 
     @property
     def resource_manager(self):
@@ -289,9 +288,9 @@ class TodoDetailPanel(QtWidgets.QWidget):
         优先从宿主 TodoListWidget 注入的 `resource_manager` 读取，避免在适配器中直接依赖 MainWindow。
         """
         host = self.host_list_widget
-        if host is not None and hasattr(host, "resource_manager"):
-            return host.resource_manager
-        return None
+        if host is None:
+            return None
+        return host.resource_manager
 
     def set_detail(self, todo: TodoItem) -> None:
         self.current_detail_info = todo.detail_info

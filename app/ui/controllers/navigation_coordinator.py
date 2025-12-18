@@ -26,6 +26,8 @@ class NavigationCoordinator(QtCore.QObject):
     open_player_editor = QtCore.pyqtSignal()  # 打开玩家编辑器
     # 新增：复合节点选择（按名称）
     select_composite_name = QtCore.pyqtSignal(str)
+    # 新增：管理配置定位（section_key, item_id；item_id 允许为空表示仅切换 section）
+    focus_management_section_and_item = QtCore.pyqtSignal(str, str)
     switch_combat_tab = QtCore.pyqtSignal(int)  # 切换战斗预设标签
     
     def __init__(self, parent: Optional[QtCore.QObject] = None):
@@ -177,8 +179,15 @@ class NavigationCoordinator(QtCore.QObject):
     def _handle_management_request(self, request: UiNavigationRequest) -> None:
         """处理管理配置库相关的跳转。"""
         self.navigate_to_mode.emit("management")
-        # 具体 section/item 选中由管理库页面与主窗口事件 Mixin 负责，
-        # 这里仅切换模式，避免 NavigationCoordinator 反查 UI 结构。
+        section_key = request.management_section_key or request.resource_id or ""
+        item_id = request.management_item_id or ""
+        if section_key:
+            QtCore.QTimer.singleShot(
+                150,
+                lambda: self.focus_management_section_and_item.emit(
+                    str(section_key or ""), str(item_id or "")
+                ),
+            )
 
     def _handle_validation_issue_request(self, request: UiNavigationRequest) -> None:
         """处理从验证面板发起的跳转请求。"""
@@ -329,7 +338,22 @@ class NavigationCoordinator(QtCore.QObject):
         if not detail:
             return
 
-        issue_type = detail.get("type", "")
+        issue_type = str(detail.get("type", "") or "")
+
+        # 1) 若 detail 明确携带 management 定位信息，优先按显式 key 处理
+        management_section_key = detail.get("management_section_key")
+        management_item_id = detail.get("management_item_id")
+        if isinstance(management_section_key, str) and management_section_key:
+            self.navigate_to_mode.emit("management")
+            QtCore.QTimer.singleShot(
+                150,
+                lambda: self.focus_management_section_and_item.emit(
+                    str(management_section_key or ""), str(management_item_id or "")
+                ),
+            )
+            return
+
+        container_to_use: object | None = None
 
         if issue_type == "template":
             template_id = detail.get("template_id")
@@ -339,6 +363,7 @@ class NavigationCoordinator(QtCore.QObject):
                     if current_package and template_id in current_package.templates:
                         self.navigate_to_mode.emit("template")
                         self.select_template.emit(str(template_id))
+                        container_to_use = current_package.get_template(str(template_id))
 
         elif issue_type == "instance":
             instance_id = detail.get("instance_id")
@@ -348,8 +373,111 @@ class NavigationCoordinator(QtCore.QObject):
                     if current_package and instance_id in current_package.instances:
                         self.navigate_to_mode.emit("placement")
                         self.select_instance.emit(str(instance_id))
+                        container_to_use = current_package.get_instance(str(instance_id))
 
         elif issue_type == "level_entity":
             self.navigate_to_mode.emit("placement")
             self.select_level_entity.emit()
+            if self.get_current_package:
+                current_package = self.get_current_package()
+                container_to_use = getattr(current_package, "level_entity", None) if current_package else None
+
+        elif issue_type == "attached_graph":
+            owner_kind = str(detail.get("owner_kind", "") or "")
+            owner_id = str(detail.get("owner_id", "") or "")
+            if owner_kind == "template" and owner_id:
+                self.navigate_to_mode.emit("template")
+                self.select_template.emit(owner_id)
+                if self.get_current_package:
+                    current_package = self.get_current_package()
+                    container_to_use = current_package.get_template(owner_id) if current_package else None
+            elif owner_kind == "instance" and owner_id:
+                self.navigate_to_mode.emit("placement")
+                self.select_instance.emit(owner_id)
+                if self.get_current_package:
+                    current_package = self.get_current_package()
+                    container_to_use = current_package.get_instance(owner_id) if current_package else None
+            elif owner_kind == "level":
+                self.navigate_to_mode.emit("placement")
+                self.select_level_entity.emit()
+                if self.get_current_package:
+                    current_package = self.get_current_package()
+                    container_to_use = getattr(current_package, "level_entity", None) if current_package else None
+
+        elif issue_type == "package_graph_index":
+            # 节点图索引声明但未挂载：直接打开图即可
+            self._open_graph_from_validation_detail(detail, container=None)
+            return
+
+        elif issue_type == "graph":
+            # 节点图源码校验/索引问题等：直接打开图（不强依赖容器）
+            self._open_graph_from_validation_detail(detail, container=None)
+            return
+
+        elif issue_type == "composite_node":
+            composite_name = str(detail.get("node_name", "") or "")
+            self.navigate_to_mode.emit("composite")
+            if composite_name:
+                QtCore.QTimer.singleShot(
+                    150,
+                    lambda: self.select_composite_name.emit(composite_name),
+                )
+            return
+
+        elif issue_type.startswith("management_"):
+            # 兼容旧 detail：按类型映射到管理 section
+            section_key = ""
+            item_id = ""
+            if issue_type == "management_ui_layout":
+                section_key = "ui_control_groups"
+                item_id = str(detail.get("layout_id", "") or "")
+            elif issue_type == "management_level_variable":
+                section_key = "variable"
+                item_id = str(detail.get("variable_id", "") or "")
+            if section_key:
+                self.navigate_to_mode.emit("management")
+                QtCore.QTimer.singleShot(
+                    150,
+                    lambda: self.focus_management_section_and_item.emit(section_key, item_id),
+                )
+            return
+
+        # 2) 图定位：若 detail 携带 graph_id，则打开图并在需要时聚焦节点/连线
+        self._open_graph_from_validation_detail(detail, container=container_to_use)
+
+    def _open_graph_from_validation_detail(self, detail: Dict[str, object], *, container: object | None) -> None:
+        graph_id_value = detail.get("graph_id") or detail.get("graph_id_value") or detail.get("resource_id")
+        graph_id = str(graph_id_value or "")
+        if not graph_id:
+            return
+
+        graph_data_service = self._resolve_graph_data_service()
+        graph_data = graph_data_service.load_graph_data(graph_id)
+        if not isinstance(graph_data, dict):
+            return
+
+        # 注意：open_graph 会统一触发切换到编辑器模式（由 GraphEditorController 发出信号），
+        # 这里不额外 emit navigate_to_mode，避免重复切换。
+        self.open_graph.emit(graph_id, graph_data, container)
+
+        node_id = str(detail.get("node_id") or "")
+        if node_id:
+            QtCore.QTimer.singleShot(200, lambda: self.focus_node.emit(node_id))
+            return
+
+        edge_id = str(detail.get("edge_id") or "")
+        src_node = str(
+            detail.get("src_node")
+            or detail.get("source_node_id")
+            or detail.get("src_node_id")
+            or ""
+        )
+        dst_node = str(
+            detail.get("dst_node")
+            or detail.get("target_node_id")
+            or detail.get("dst_node_id")
+            or ""
+        )
+        if src_node and dst_node:
+            QtCore.QTimer.singleShot(200, lambda: self.focus_edge.emit(src_node, dst_node, edge_id))
 

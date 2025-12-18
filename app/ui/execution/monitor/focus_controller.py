@@ -9,13 +9,12 @@
   离线复现与问题排查。
 """
 
-import json
 from pathlib import Path
 
 from PyQt6 import QtCore
 
 from app.automation.editor.executor_protocol import ViewportController
-from engine.utils.cache.cache_paths import get_runtime_cache_root
+from app.runtime.services import get_shared_json_cache_service
 
 
 class FocusController:
@@ -85,8 +84,6 @@ class FocusController:
         - 字段：graph_id、节点ID、标题、程序坐标、可见标记、编辑器 bbox / center / screen_center。
         """
         workspace_root = Path(workspace_path)
-        output_dir = get_runtime_cache_root(workspace_root) / "debug"
-        output_dir.mkdir(parents=True, exist_ok=True)
 
         graph_id_value = getattr(graph_model, "graph_id", None)
         if graph_id_value is None:
@@ -151,9 +148,14 @@ class FocusController:
             "nodes": nodes_payload,
         }
 
-        output_path = output_dir / "last_focus_recognition.json"
-        with output_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        cache_service = get_shared_json_cache_service(workspace_root)
+        cache_service.save_json(
+            "debug/last_focus_recognition.json",
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
 
     def ensure_point_visible(self, program_x: float, program_y: float) -> None:
         """使用与执行步骤相同的画布拖拽逻辑，确保指定程序坐标点出现在安全视口区域内。

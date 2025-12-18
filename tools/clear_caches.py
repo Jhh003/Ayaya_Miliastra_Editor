@@ -112,15 +112,51 @@ def run_rebuild_operations(
     rebuild_index: bool,
     rebuild_graph_caches: bool,
 ) -> None:
-    # 兼容外壳：暂不执行重建，待引擎稳定导出后挂接
+    if not (rebuild_index or rebuild_graph_caches):
+        return
+
+    # 说明：此处使用引擎资源层的公开能力完成重建，不需要任何 UI 依赖。
+    from engine.configs.resource_types import ResourceType  # noqa: WPS433
+    from engine.resources.resource_manager import ResourceManager  # noqa: WPS433
+
+    resource_manager = ResourceManager(workspace_path)
+
     if rebuild_index:
-        print("[信息] 跳过索引重建（等待引擎稳定导出接口）")
+        print("[信息] 开始重建资源索引（全量扫描 assets/资源库）...")
+        resource_manager.rebuild_index()
+        # 写入持久化缓存（app/runtime/cache/resource_cache/resource_index.json）
+        # 该写盘接口目前由 ResourceManager 内部委托给 ResourceIndexService。
+        resource_manager._save_persistent_resource_index()  # noqa: SLF001
+        print("[OK] 资源索引重建完成，并已写入持久化缓存")
+
     if rebuild_graph_caches:
-        print("[信息] 跳过图缓存预构建（等待引擎稳定导出接口）")
+        graph_ids = list(resource_manager.list_resources(ResourceType.GRAPH))
+        if not graph_ids:
+            print("[信息] 未发现任何节点图资源（ResourceType.GRAPH），跳过图缓存预构建")
+            return
+
+        graph_ids.sort()
+        print(f"[信息] 开始预构建图持久化缓存（graph_cache），节点图数量: {len(graph_ids)}")
+
+        built_count = 0
+        for index, graph_id in enumerate(graph_ids, start=1):
+            # 触发解析 + 增强布局 + 写入 app/runtime/cache/graph_cache/<graph_id>.json
+            _ = resource_manager.load_resource(ResourceType.GRAPH, graph_id)
+            built_count += 1
+            if index == 1 or index % 50 == 0 or index == len(graph_ids):
+                print(f"  - 进度: {index}/{len(graph_ids)}（最近: {graph_id}）")
+
+        print(f"[OK] 图缓存预构建完成：{built_count}/{len(graph_ids)}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="运行期缓存管理（清空/重建）")
+    parser.add_argument(
+        "--root",
+        type=str,
+        default="",
+        help="工作区根目录（默认自动推导为 tools/ 的父目录）。用于在临时目录或 CI 中做无副作用验证。",
+    )
     parser.add_argument(
         "--clear",
         action="store_true",
@@ -153,7 +189,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    workspace_path = compute_workspace_path()
+    workspace_path = Path(args.root).resolve() if str(args.root).strip() else compute_workspace_path()
 
     run_clear_operations(
         workspace_path=workspace_path,

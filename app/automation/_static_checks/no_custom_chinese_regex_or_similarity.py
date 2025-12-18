@@ -3,7 +3,7 @@
 """
 一次性静态扫描（自动化目录）：
 - 禁止在运行路径手写正则匹配中文（应统一走 executor._extract_chinese → node_detection.extract_chinese → ocr_utils.extract_chinese）
-- 禁止在运行路径自实现相似度（应统一走 core.utilities.text_similarity.chinese_similar）
+- 禁止在运行路径自实现相似度（应统一走 engine.utils.text.text_similarity.chinese_similar）
 发现违规时退出码为 1。
 """
 
@@ -50,7 +50,7 @@ def scan_file(filepath: str) -> list[Tuple[int, str]]:
         # 相似度嫌疑
         for hint in _SIMILARITY_HINTS:
             if re.search(hint, line, flags=re.IGNORECASE):
-                findings.append((idx, "疑似自实现相似度，请改用 core.utilities.text_similarity.chinese_similar"))
+                findings.append((idx, "疑似自实现相似度，请改用 engine.utils.text.text_similarity.chinese_similar"))
                 break
     return findings
 
@@ -58,7 +58,7 @@ def scan_file(filepath: str) -> list[Tuple[int, str]]:
 def main() -> int:
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     violations = 0
-    for file_path in iter_py_files(root_dir):
+    for file_path in iter_python_files(root_dir):
         rel = os.path.relpath(file_path, root_dir)
         results = scan_file(file_path)
         if results:

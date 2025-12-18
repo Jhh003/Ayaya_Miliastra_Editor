@@ -9,7 +9,7 @@ from engine.graph.models import GraphModel
 from engine.nodes.advanced_node_features import build_signal_definitions_from_package
 from engine.signal import get_default_signal_binding_service
 
-from app.common.in_memory_graph_payload_cache import drop_graph_data_for_root, store_graph_data
+from app.runtime.services.graph_data_service import get_shared_graph_data_service
 from app.models.todo_item import TodoItem
 from app.models.todo_graph_tasks import (
     CompositeTaskBuilder,
@@ -58,6 +58,7 @@ class TodoGraphTaskGenerator:
         self.package = package
         self._signal_param_types_by_id: Dict[str, Dict[str, str]] = {}
         self._signal_binding_service = get_default_signal_binding_service()
+        self._graph_data_service = get_shared_graph_data_service(resource_manager, None)
         if package is not None:
             self._init_signal_param_types(package)
         self._composite_builder = CompositeTaskBuilder(
@@ -301,7 +302,7 @@ class TodoGraphTaskGenerator:
         suppress_auto_jump: bool,
         graph_data: dict,
     ) -> None:
-        drop_graph_data_for_root(graph_root.todo_id)
+        self._graph_data_service.drop_payload_for_root(graph_root.todo_id)
         detail_info = self._build_graph_root_detail(
             existing_detail=graph_root.detail_info,
             graph_id=graph_id,
@@ -311,7 +312,7 @@ class TodoGraphTaskGenerator:
             preview_template_id=preview_template_id,
             suppress_auto_jump=suppress_auto_jump,
         )
-        cache_key = store_graph_data(graph_root.todo_id, graph_id, graph_data)
+        cache_key = self._graph_data_service.store_payload_graph_data(graph_root.todo_id, graph_id, graph_data)
         detail_info["graph_data_key"] = cache_key
         graph_root.detail_info = detail_info
 

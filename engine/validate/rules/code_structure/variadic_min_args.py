@@ -7,7 +7,13 @@ from typing import List
 from ...context import ValidationContext
 from ...issue import EngineIssue
 from ...pipeline import ValidationRule
-from ..ast_utils import create_rule_issue, get_cached_module, iter_class_methods, line_span_text
+from ..ast_utils import (
+    create_rule_issue,
+    get_cached_module,
+    infer_graph_scope,
+    iter_class_methods,
+    line_span_text,
+)
 from ..node_index import variadic_min_args
 
 
@@ -24,7 +30,8 @@ class VariadicMinArgsRule(ValidationRule):
 
         file_path: Path = ctx.file_path
         tree = get_cached_module(ctx)
-        rules = variadic_min_args(ctx.workspace_path)
+        scope = infer_graph_scope(ctx)
+        rules = variadic_min_args(ctx.workspace_path, scope)
         issues: List[EngineIssue] = []
 
         for _, method in iter_class_methods(tree):

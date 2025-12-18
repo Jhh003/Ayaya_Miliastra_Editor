@@ -35,6 +35,29 @@ class SearchFilterMixin:
             value = text_getter(item) if text_getter else item.text()
             item.setHidden(q not in value.lower())
 
+    def ensure_current_item_visible_or_select_first(
+        self,
+        list_widget: QtWidgets.QListWidget,
+        *,
+        on_selected: Optional[Callable[[QtWidgets.QListWidgetItem], None]] = None,
+    ) -> None:
+        """若当前选中项被隐藏，则选中第一条可见记录。
+
+        适用场景：
+        - 搜索过滤后，当前选中项可能被隐藏；此时需要切换到第一条可见记录，
+          保持“有可见内容就有焦点”的体验，并避免右侧详情仍显示已被过滤掉的上下文。
+        """
+        current_item = list_widget.currentItem()
+        if current_item is not None and not current_item.isHidden():
+            return
+        for row_index in range(list_widget.count()):
+            item = list_widget.item(row_index)
+            if item is not None and not item.isHidden():
+                list_widget.setCurrentItem(item)
+                if on_selected is not None:
+                    on_selected(item)
+                return
+
     def filter_table_rows_by_columns(
         self,
         table_widget: QtWidgets.QTableWidget,

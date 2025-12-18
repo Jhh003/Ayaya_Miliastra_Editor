@@ -88,6 +88,40 @@ class ParamUsageTracker:
         """
         self._traverse_and_record_usage(stmts, title_to_queue)
 
+    def collect_usage_from_param_assignments(self, stmts: List[ast.stmt], created_nodes: List[NodeModel]) -> None:
+        """采集“入口形参直接赋值”场景的参数使用，并映射到 IR 生成的【设置局部变量】节点。
+
+        背景：
+        - 类格式复合节点在 if/match 等互斥分支中对同一变量赋值时，IR 会将赋值建模为
+          【获取局部变量】/【设置局部变量】组合。
+        - 若某个分支出现 `变量 = 入口形参` 的“直接赋值”，原始 AST 中不存在节点调用，
+          仅靠 `collect_usage_from_calls` 无法将该形参映射到【设置局部变量】节点的输入端口“值”，
+          从而导致结构校验认为该端口“缺少数据来源”。
+
+        本方法通过“源码行号 → 节点”对齐策略补齐该映射：
+        - 对每条 `Assign/AnnAssign`，若右值为 `Name` 且来源为入口形参（或其别名），
+          则在同一行号范围内查找 IR 生成的【设置局部变量】节点，并记录：
+              param -> (node_id, "值")
+        """
+        # 预索引：按源代码行号聚合“设置局部变量”节点（同一行可能有多个）
+        set_local_by_line: Dict[int, List[NodeModel]] = {}
+        for node in created_nodes or []:
+            if getattr(node, "title", "") != "设置局部变量":
+                continue
+            lineno = int(getattr(node, "source_lineno", 0) or 0)
+            if lineno <= 0:
+                continue
+            # 仅在确实存在“值”输入端口时纳入
+            has_value_port = any(getattr(p, "name", "") == "值" for p in (node.inputs or []))
+            if not has_value_port:
+                continue
+            set_local_by_line.setdefault(lineno, []).append(node)
+
+        if not set_local_by_line:
+            return
+
+        self._collect_assignment_usage_recursive(stmts, set_local_by_line)
+
     def collect_control_flow_usage(self, stmts: List[ast.stmt]) -> None:
         """采集形参在控制流条件中的使用情况。
 
@@ -175,6 +209,74 @@ class ParamUsageTracker:
             elif isinstance(stmt, ast.While):
                 self._collect_param_aliases_recursive(stmt.body or [])
                 self._collect_param_aliases_recursive(getattr(stmt, "orelse", []) or [])
+
+    def _collect_assignment_usage_recursive(
+        self,
+        stmts: List[ast.stmt],
+        set_local_by_line: Dict[int, List[NodeModel]],
+    ) -> None:
+        """递归遍历赋值语句，补齐“形参直接赋值→设置局部变量.值”的参数使用记录。"""
+        for stmt in stmts:
+            # 只关心 Assign/AnnAssign 且右值是 Name/self.xxx
+            if isinstance(stmt, ast.Assign):
+                value_expr = getattr(stmt, "value", None)
+                lineno = int(getattr(stmt, "lineno", 0) or 0)
+                if lineno > 0 and value_expr is not None:
+                    self._try_record_assignment_usage(value_expr, lineno, set_local_by_line)
+            elif isinstance(stmt, ast.AnnAssign):
+                value_expr = getattr(stmt, "value", None)
+                lineno = int(getattr(stmt, "lineno", 0) or 0)
+                if lineno > 0 and value_expr is not None:
+                    self._try_record_assignment_usage(value_expr, lineno, set_local_by_line)
+
+            # 递归控制流块
+            if isinstance(stmt, ast.If):
+                self._collect_assignment_usage_recursive(stmt.body or [], set_local_by_line)
+                self._collect_assignment_usage_recursive(stmt.orelse or [], set_local_by_line)
+            elif hasattr(ast, "Match") and isinstance(stmt, getattr(ast, "Match")):
+                for case in getattr(stmt, "cases", []):
+                    self._collect_assignment_usage_recursive(getattr(case, "body", []) or [], set_local_by_line)
+            elif isinstance(stmt, ast.For):
+                self._collect_assignment_usage_recursive(stmt.body or [], set_local_by_line)
+                self._collect_assignment_usage_recursive(getattr(stmt, "orelse", []) or [], set_local_by_line)
+            elif isinstance(stmt, ast.While):
+                self._collect_assignment_usage_recursive(stmt.body or [], set_local_by_line)
+                self._collect_assignment_usage_recursive(getattr(stmt, "orelse", []) or [], set_local_by_line)
+
+    def _try_record_assignment_usage(
+        self,
+        value_expr: ast.expr,
+        lineno: int,
+        set_local_by_line: Dict[int, List[NodeModel]],
+    ) -> None:
+        """若赋值右值来源于入口形参（或其别名/实例字段别名），则映射到对应行号的设置局部变量节点。"""
+        if lineno <= 0:
+            return
+        candidates = set_local_by_line.get(lineno)
+        if not candidates:
+            return
+
+        # 解析右值 -> 入口形参名
+        resolved_param: str = ""
+        if isinstance(value_expr, ast.Name):
+            name_text = value_expr.id
+            if name_text in self.input_param_usage:
+                resolved_param = name_text
+            elif name_text in self.alias_of_param:
+                resolved_param = self.alias_of_param[name_text]
+        elif isinstance(value_expr, ast.Attribute):
+            # self.xxx：若 xxx 与入口形参存在别名关系，则记录为对应入口形参
+            owner = value_expr.value
+            if isinstance(owner, ast.Name) and owner.id == "self":
+                attr_name = value_expr.attr
+                resolved_param = self.state_attr_to_param.get(attr_name, "")
+
+        if not resolved_param:
+            return
+
+        # 消费一个“设置局部变量”节点，并记录 param -> (node_id, "值")
+        dst_node = candidates.pop(0)
+        self.input_param_usage.setdefault(resolved_param, []).append((dst_node.id, "值"))
     
     def _collect_constant_vars_recursive(self, stmts: List[ast.stmt]) -> None:
         """递归采集常量变量定义"""
@@ -310,7 +412,10 @@ class ParamUsageTracker:
                 call_node = getattr(stmt, "value")
             
             if call_node:
-                self._match_one_call(call_node, title_to_queue)
+                # 先处理嵌套调用（深度优先），再匹配当前调用：
+                # IR 会将嵌套调用展开为“先创建嵌套节点，再创建父节点”的顺序；
+                # 若只匹配顶层调用，会遗漏嵌套节点对入口形参的使用，导致对应输入端口被误判为“缺少数据来源”。
+                self._traverse_calls_depth_first(call_node, title_to_queue)
             
             # 递归处理控制流
             if isinstance(stmt, ast.If):
@@ -325,6 +430,22 @@ class ParamUsageTracker:
             elif isinstance(stmt, ast.While):
                 self._traverse_and_record_usage(stmt.body or [], title_to_queue)
                 self._traverse_and_record_usage(getattr(stmt, "orelse", []) or [], title_to_queue)
+
+    def _traverse_calls_depth_first(self, call_expr: ast.Call, title_to_queue: Dict[str, List[NodeModel]]) -> None:
+        """深度优先遍历调用表达式树：先处理嵌套调用，再处理当前调用。"""
+        # 位置参数中的嵌套调用（跳过第一个 game）
+        for idx, arg_expr in enumerate(getattr(call_expr, "args", []) or []):
+            if idx == 0:
+                continue
+            if isinstance(arg_expr, ast.Call):
+                self._traverse_calls_depth_first(arg_expr, title_to_queue)
+        # 关键字参数中的嵌套调用
+        for keyword in getattr(call_expr, "keywords", []) or []:
+            value_expr = getattr(keyword, "value", None)
+            if isinstance(value_expr, ast.Call):
+                self._traverse_calls_depth_first(value_expr, title_to_queue)
+        # 最后匹配当前调用本身
+        self._match_one_call(call_expr, title_to_queue)
     
     def _match_one_call(self, call_expr: ast.Call, title_to_queue: Dict[str, List[NodeModel]]) -> None:
         """匹配单个调用并记录参数使用"""

@@ -29,6 +29,7 @@ from app.ui.graph.library_pages.library_scaffold import (
     LibraryPageMixin,
     LibrarySelection,
 )
+from app.ui.graph.library_pages.library_view_scope import describe_resource_view_scope
 from app.ui.graph.library_pages.management_sections import (
     BaseManagementSection,
     ManagementRowData,
@@ -58,6 +59,9 @@ class ManagementLibraryWidget(
     data_changed = QtCore.pyqtSignal(LibraryChangeEvent)
     # 左侧分类当前选中的 section key 变化时发射（例如 "timer" / "variable" / "preset_point"）。
     active_section_changed = QtCore.pyqtSignal(str)
+    # 当前列表选中变化时发射，用于驱动主窗口右侧管理属性面板与专用编辑面板刷新。
+    # 约定参数与主窗口的 `_on_management_selection_changed(has_selection, title, description, rows)` 一致。
+    selection_summary_changed = QtCore.pyqtSignal(bool, str, str, object)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(
@@ -106,10 +110,6 @@ class ManagementLibraryWidget(
             self.ui_control_group_manager.set_package(package)
         self._refresh_items()
 
-    def set_package(self, package: ManagementPackage) -> None:
-        """兼容旧接口，内部委托给 set_context。"""
-        self.set_context(package)
-
     def reload(self) -> None:
         """在当前上下文下全量刷新管理配置列表并负责选中恢复。"""
         self._refresh_items()
@@ -130,7 +130,10 @@ class ManagementLibraryWidget(
         return LibrarySelection(
             kind="management",
             id=item_id,
-            context={"section_key": section_key, "scope": self._describe_current_scope()},
+            context={
+                "section_key": section_key,
+                "scope": describe_resource_view_scope(self.current_package),
+            },
         )
 
     def set_selection(self, selection: Optional[LibrarySelection]) -> None:
@@ -163,18 +166,6 @@ class ManagementLibraryWidget(
             if user_data == (target_section_key, target_item_id):
                 self.item_list.setCurrentItem(list_item)
                 break
-
-    def get_current_selection(self) -> Optional[Tuple[str, str]]:
-        """返回当前列表中选中的 (section_key, item_id)（兼容旧接口）。"""
-        selection = self.get_selection()
-        if selection is None:
-            return None
-        if not isinstance(selection.context, dict):
-            return None
-        section_key_any = selection.context.get("section_key")
-        if not isinstance(section_key_any, str) or not section_key_any:
-            return None
-        return section_key_any, selection.id
 
     def focus_section_and_item(self, section_key: str, item_id: str) -> None:
         """根据 section_key 与 item_id 在管理库中选中对应条目。
@@ -454,14 +445,6 @@ class ManagementLibraryWidget(
             if current_item_after_refresh is not None:
                 self._on_item_selection_changed()
 
-    def _describe_current_scope(self) -> str:
-        """根据当前资源视图返回简单 scope 标识，用于变更事件上下文。"""
-        if isinstance(self.current_package, PackageView):
-            return "package"
-        if isinstance(self.current_package, GlobalResourceView):
-            return "global"
-        return "unknown"
-
     def _add_row_item(self, row_data: ManagementRowData) -> None:
         """向列表中添加一行管理配置条目。"""
         if self.item_list is None:
@@ -588,14 +571,9 @@ class ManagementLibraryWidget(
         - 当没有有效选中记录时，通知主窗口清空并收起“属性”标签；
         - 当存在选中记录时，根据行数据构造 (label, value) 对列表。
         """
-        main_window = self.window()
-        handler = getattr(main_window, "_on_management_selection_changed", None)
-        if not callable(handler):
-            return
-
         if row_data is None or section_key is None:
             self.notify_selection_state(False, context={"source": "management", "section_key": section_key})
-            handler(False, "", "", [])
+            self.selection_summary_changed.emit(False, "", "", [])
             return
 
         self.notify_selection_state(True, context={"source": "management", "section_key": section_key})
@@ -624,7 +602,7 @@ class ManagementLibraryWidget(
         if row_data.last_modified:
             detail_rows.append(("最后修改时间", row_data.last_modified))
 
-        handler(bool(detail_rows), panel_title, panel_description, detail_rows)
+        self.selection_summary_changed.emit(bool(detail_rows), panel_title, panel_description, detail_rows)
 
     def _resolve_active_section(self) -> Optional[BaseManagementSection]:
         if not self._current_section_key:
@@ -699,7 +677,7 @@ class ManagementLibraryWidget(
                     operation="create",
                     context={
                         "section_key": new_section_key,
-                        "scope": self._describe_current_scope(),
+                        "scope": describe_resource_view_scope(self.current_package),
                     },
                 )
                 self.data_changed.emit(event)
@@ -731,7 +709,7 @@ class ManagementLibraryWidget(
                 operation="delete",
                 context={
                     "section_key": section_key,
-                    "scope": self._describe_current_scope(),
+                    "scope": describe_resource_view_scope(self.current_package),
                 },
             )
             self.data_changed.emit(event)

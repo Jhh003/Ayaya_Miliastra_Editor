@@ -25,6 +25,7 @@ from engine.layout import UI_ROW_HEIGHT  # unified row height metric
 from engine.layout import LayoutService
 from engine.layout.flow.preprocess import promote_flow_outputs_for_layout
 from engine.configs.settings import settings as _settings_ui
+from app.models.edit_session_capabilities import EditSessionCapabilities
 
 if TYPE_CHECKING:
     from app.ui.dynamic_port_widget import AddPortButton
@@ -51,8 +52,26 @@ class GraphScene(
         node_library: Dict = None,
         composite_edit_context: Dict = None,
         signal_edit_context: Dict = None,
+        *,
+        edit_session_capabilities: EditSessionCapabilities | None = None,
     ):
         super().__init__()
+        if edit_session_capabilities is not None:
+            expected_read_only = bool(edit_session_capabilities.is_read_only)
+            if bool(read_only) != expected_read_only:
+                raise ValueError(
+                    "GraphScene 初始化参数冲突：read_only 与 edit_session_capabilities.can_interact 不一致；"
+                    f"read_only={read_only}, can_interact={edit_session_capabilities.can_interact}"
+                )
+            effective_capabilities = edit_session_capabilities
+        else:
+            # 兼容旧调用：仅提供 read_only 时，映射为默认能力组合。
+            effective_capabilities = (
+                EditSessionCapabilities.read_only_preview()
+                if bool(read_only)
+                else EditSessionCapabilities.interactive_preview()
+            )
+
         self.model = model
         # 批量构建标志：加载大图时由控制器临时开启，避免每次 add_node_item 都全局重算场景矩形与小地图
         self.is_bulk_adding_items: bool = False
@@ -91,7 +110,8 @@ class GraphScene(
         self.clipboard_nodes: list[dict] = []  # 复制的节点数据
         self.clipboard_edges: list[dict] = []  # 复制的连线数据
         self.last_mouse_scene_pos: Optional[QtCore.QPointF] = None  # 记录最后的鼠标位置
-        self.read_only = read_only  # 只读模式
+        self._edit_session_capabilities: EditSessionCapabilities = effective_capabilities
+        self._read_only: bool = bool(effective_capabilities.is_read_only)
         # 使用主题深色背景，统一节点画布观感
         self.setBackgroundBrush(QtGui.QColor(Colors.BG_DARK))
         
@@ -123,6 +143,59 @@ class GraphScene(
                 workspace_path=getattr(self.layout_registry_context, "workspace_path", None),
             )
             self.model.basic_blocks = _result.basic_blocks
+
+    # === EditSessionCapabilities（单一真源） ===
+
+    @property
+    def edit_session_capabilities(self) -> EditSessionCapabilities:
+        return self._edit_session_capabilities
+
+    def set_edit_session_capabilities(self, capabilities: EditSessionCapabilities) -> None:
+        """更新会话能力，并同步到场景交互开关（read_only）与现有节点可拖拽状态。"""
+        self._edit_session_capabilities = capabilities
+        self._read_only = bool(capabilities.is_read_only)
+
+        # 同步现有节点项的可移动标志，避免“先只读构建→后切交互”时节点仍不可拖拽。
+        for node_item in self.node_items.values():
+            node_item.setFlag(
+                QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable,
+                not self._read_only,
+            )
+
+        # 同步行内常量编辑控件的可交互性：
+        # - QGraphicsTextItem：通过 TextInteractionFlags 禁用编辑/选择
+        # - QGraphicsProxyWidget：禁用其内部 widget
+        desired_text_flags = (
+            QtCore.Qt.TextInteractionFlag.NoTextInteraction
+            if self._read_only
+            else QtCore.Qt.TextInteractionFlag.TextEditorInteraction
+        )
+        for node_item in self.node_items.values():
+            constant_edits = getattr(node_item, "_constant_edits", None)
+            if not isinstance(constant_edits, dict):
+                continue
+            for edit_item in constant_edits.values():
+                if hasattr(edit_item, "setTextInteractionFlags"):
+                    edit_item.setTextInteractionFlags(desired_text_flags)
+                if hasattr(edit_item, "widget") and callable(getattr(edit_item, "widget")):
+                    embedded_widget = edit_item.widget()
+                    if embedded_widget is not None and hasattr(embedded_widget, "setEnabled"):
+                        embedded_widget.setEnabled(not self._read_only)
+
+    @property
+    def read_only(self) -> bool:
+        """兼容字段：只读由 capabilities.can_interact 推导。
+
+        注意：请优先使用 set_edit_session_capabilities()，避免语义分叉。
+        """
+        return self._read_only
+
+    @read_only.setter
+    def read_only(self, value: bool) -> None:
+        # 兼容旧写法：只改“可交互”能力，保留其余能力位。
+        self.set_edit_session_capabilities(
+            self._edit_session_capabilities.with_overrides(can_interact=not bool(value))
+        )
 
     # === 辅助方法：维护节点到连线的邻接索引 ===
 

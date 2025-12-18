@@ -117,7 +117,7 @@ class StructListItemEditDialog(BaseDialog):
             self._set_empty_state(f"找不到结构体定义：{self._struct_id}")
             return
 
-        name_value = payload.get("name")
+        name_value = payload.get("name") or payload.get("struct_name")
         struct_name = (
             str(name_value).strip() if isinstance(name_value, str) else self._struct_id
         )
@@ -127,33 +127,63 @@ class StructListItemEditDialog(BaseDialog):
             display_name = struct_name
         self.header_label.setText(display_name)
 
-        value_entries = payload.get("value")
-        if not isinstance(value_entries, Sequence):
-            self._set_empty_state("结构体定义中未找到字段列表。")
-            return
-
         fields_for_editor: List[Dict[str, Any]] = []
-        for entry in value_entries:
-            if not isinstance(entry, Mapping):
-                continue
-            raw_key = entry.get("key")
-            raw_param_type = entry.get("param_type")
-            field_name = str(raw_key).strip() if isinstance(raw_key, str) else ""
-            param_type_text = (
-                str(raw_param_type).strip() if isinstance(raw_param_type, str) else ""
-            )
-            if not field_name or not param_type_text:
-                continue
-            canonical_type = param_type_to_canonical(param_type_text)
+        value_entries = payload.get("value")
+        if isinstance(value_entries, Sequence):
+            for entry in value_entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                raw_key = entry.get("key")
+                raw_param_type = entry.get("param_type")
+                field_name = str(raw_key).strip() if isinstance(raw_key, str) else ""
+                param_type_text = (
+                    str(raw_param_type).strip()
+                    if isinstance(raw_param_type, str)
+                    else ""
+                )
+                if not field_name or not param_type_text:
+                    continue
+                canonical_type = param_type_to_canonical(param_type_text)
 
-            initial_raw_value = self._initial_values.get(field_name)
-            fields_for_editor.append(
-                {
-                    "name": field_name,
-                    "type_name": canonical_type,
-                    "value": initial_raw_value,
-                }
-            )
+                initial_raw_value = self._initial_values.get(field_name)
+                fields_for_editor.append(
+                    {
+                        "name": field_name,
+                        "type_name": canonical_type,
+                        "value": initial_raw_value,
+                    }
+                )
+        else:
+            fields_entries = payload.get("fields")
+            if isinstance(fields_entries, Sequence):
+                for entry in fields_entries:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    raw_key = entry.get("field_name")
+                    raw_param_type = entry.get("param_type")
+                    field_name = (
+                        str(raw_key).strip() if isinstance(raw_key, str) else ""
+                    )
+                    param_type_text = (
+                        str(raw_param_type).strip()
+                        if isinstance(raw_param_type, str)
+                        else ""
+                    )
+                    if not field_name or not param_type_text:
+                        continue
+                    canonical_type = param_type_to_canonical(param_type_text)
+
+                    initial_raw_value = self._initial_values.get(field_name)
+                    fields_for_editor.append(
+                        {
+                            "name": field_name,
+                            "type_name": canonical_type,
+                            "value": initial_raw_value,
+                        }
+                    )
+            else:
+                self._set_empty_state("结构体定义中未找到字段列表。")
+                return
 
         if not fields_for_editor:
             self._set_empty_state("结构体定义中未找到有效字段。")

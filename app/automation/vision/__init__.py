@@ -235,7 +235,7 @@ def get_template_dir() -> str:
 def capture_client_image(hwnd: int) -> Image.Image:
     """转发：截取指定窗口客户区图像。
 
-    推荐从 `core.automation.editor_capture` 直接导入使用，此处仅作为转发入口。
+    推荐从 `app.automation.capture.capture_client_image` 直接导入使用，此处仅作为转发入口。
     """
     return _capture_client_image(hwnd)
 

@@ -12,7 +12,6 @@ from .metadata_extractor import (
 from .ast_utils import (
     extract_constant_value,
     is_class_structure_format,
-    find_composite_function,
 )
 from .comment_extractor import (
     extract_comments,
@@ -26,7 +25,6 @@ __all__ = [
     'parse_dynamic_ports',
     'extract_constant_value',
     'is_class_structure_format',
-    'find_composite_function',
     'extract_comments',
     'associate_comments_to_nodes',
 ]

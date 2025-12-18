@@ -1,0 +1,18 @@
+# 依赖锁（可复现安装的版本钉死文件）
+#
+# 使用方式：
+#   pip install -r requirements.txt -c constraints.txt
+#
+# 说明：
+# - 这里优先锁定“高风险原生依赖/大依赖”（PyQt6 / onnxruntime / opencv / numpy 等）
+# - 如果你需要升级版本，请同步更新 README 的“最小可运行版本矩阵”
+PyQt6==6.7.1
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.20.1 ; platform_system == "Windows"
+numpy==1.26.4
+opencv-python==4.10.0.84
+Pillow==10.4.0
+pyperclip==1.9.0
+keyboard==0.13.5
+
+

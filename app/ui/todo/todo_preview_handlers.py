@@ -10,7 +10,7 @@ from engine.nodes.port_type_system import is_flow_port_with_context
 def handle_graph_create_node(controller: Any, todo: TodoItem, current_version: int) -> None:
     node_id = todo.detail_info.get("node_id")
     # 创建节点：仅高亮新节点，不灰显其他元素
-    controller._highlight_single_node_and_focus(
+    controller.highlight_single_node_and_focus(
         node_id=node_id,
         current_version=current_version,
         dim_unrelated=False,
@@ -27,7 +27,7 @@ def handle_graph_config_node(controller: Any, todo: TodoItem, current_version: i
         if param_name:
             controller.view.highlight_port(node_identifier, param_name, is_input=True)
 
-    controller._highlight_single_node_and_focus(
+    controller.highlight_single_node_and_focus(
         node_id=node_id,
         current_version=current_version,
         dim_unrelated=True,
@@ -47,7 +47,7 @@ def handle_graph_config_node_merged(controller: Any, todo: TodoItem, current_ver
             if param_name:
                 controller.view.highlight_port(node_identifier, param_name, is_input=True)
 
-    controller._highlight_single_node_and_focus(
+    controller.highlight_single_node_and_focus(
         node_id=node_id,
         current_version=current_version,
         dim_unrelated=True,
@@ -59,8 +59,8 @@ def handle_graph_config_node_merged(controller: Any, todo: TodoItem, current_ver
 def handle_graph_set_port_types_merged(controller: Any, todo: TodoItem, current_version: int) -> None:
     node_id = todo.detail_info.get("node_id")
     if not node_id:
-        controller._hide_overlay()
-        controller._finalize_updates()
+        controller.hide_overlay()
+        controller.finalize_updates()
         return
 
     controller.view.highlight_node(node_id)
@@ -122,11 +122,11 @@ def handle_graph_set_port_types_merged(controller: Any, todo: TodoItem, current_
                 if _is_generic_type_name(declared):
                     controller.view.highlight_port(node_id, port_name, is_input=False)
 
-    controller._dim_unrelated([node_id], [])
-    controller._hide_overlay()
-    controller._finalize_updates()
+    controller.dim_unrelated([node_id], [])
+    controller.hide_overlay()
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
         lambda use_animation, nid=node_id: controller.view.focus_on_node(
             nid,
@@ -144,10 +144,10 @@ def handle_graph_create_and_connect(controller: Any, todo: TodoItem, current_ver
     edge_id_from_detail = detail.get("edge_id")
 
     if not (prev_node_id and node_id and controller.view.scene()):
-        controller._finalize_updates()
+        controller.finalize_updates()
         return
 
-    edge_id = controller._maybe_resolve_edge_id_from_model(
+    edge_id = controller.maybe_resolve_edge_id_from_model(
         fallback_edge_id=edge_id_from_detail,
         src_node_id=prev_node_id,
         src_port=src_port,
@@ -164,12 +164,12 @@ def handle_graph_create_and_connect(controller: Any, todo: TodoItem, current_ver
     )
     focused_edge_ids: List[Optional[str]] = [edge_id] if edge_id else []
     focused_node_ids = [prev_node_id, node_id]
-    controller._dim_unrelated(focused_node_ids, focused_edge_ids)
-    controller._finalize_updates()
+    controller.dim_unrelated(focused_node_ids, focused_edge_ids)
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
-        lambda use_animation, pnid=prev_node_id, nid=node_id, eid=edge_id, s_port=src_port, d_port=dst_port: controller._overlay_and_focus(
+        lambda use_animation, pnid=prev_node_id, nid=node_id, eid=edge_id, s_port=src_port, d_port=dst_port: controller.overlay_and_focus(
             pnid,
             nid,
             eid,
@@ -193,10 +193,10 @@ def handle_graph_create_and_connect_reverse(
     edge_id_from_detail = detail.get("edge_id")
 
     if not (successor_node_id and node_id and controller.view.scene()):
-        controller._finalize_updates()
+        controller.finalize_updates()
         return
 
-    edge_id = controller._maybe_resolve_edge_id_from_model(
+    edge_id = controller.maybe_resolve_edge_id_from_model(
         fallback_edge_id=edge_id_from_detail,
         src_node_id=node_id,
         src_port=node_port,
@@ -213,12 +213,12 @@ def handle_graph_create_and_connect_reverse(
     )
     focused_edge_ids: List[Optional[str]] = [edge_id] if edge_id else []
     focused_node_ids = [node_id, successor_node_id]
-    controller._dim_unrelated(focused_node_ids, focused_edge_ids)
-    controller._finalize_updates()
+    controller.dim_unrelated(focused_node_ids, focused_edge_ids)
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
-        lambda use_animation, snid=successor_node_id, nid=node_id, eid=edge_id, n_port=node_port, s_port=successor_port: controller._overlay_and_focus(
+        lambda use_animation, snid=successor_node_id, nid=node_id, eid=edge_id, n_port=node_port, s_port=successor_port: controller.overlay_and_focus(
             snid,
             nid,
             eid,
@@ -241,7 +241,7 @@ def handle_graph_create_and_connect_data(
     edge_identifier = detail.get("edge_id")
 
     if not (target_node_id and data_node_id and controller.view.scene()):
-        controller._finalize_updates()
+        controller.finalize_updates()
         return
 
     controller.view.highlight_nodes_and_edge(
@@ -253,12 +253,12 @@ def handle_graph_create_and_connect_data(
         [edge_identifier] if edge_identifier else []
     )
     focused_node_ids = [data_node_id, target_node_id]
-    controller._dim_unrelated(focused_node_ids, focused_edge_ids)
-    controller._finalize_updates()
+    controller.dim_unrelated(focused_node_ids, focused_edge_ids)
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
-        lambda use_animation, data_id=data_node_id, target_id=target_node_id, edge_id_value=edge_identifier: controller._overlay_and_focus(
+        lambda use_animation, data_id=data_node_id, target_id=target_node_id, edge_id_value=edge_identifier: controller.overlay_and_focus(
             data_id,
             target_id,
             edge_id_value,
@@ -276,7 +276,7 @@ def handle_graph_create_branch_node(controller: Any, todo: TodoItem, current_ver
     branch_name = detail.get("branch_name")
 
     if not (branch_node_id and node_id and controller.view.scene()):
-        controller._finalize_updates()
+        controller.finalize_updates()
         return
 
     controller.view.highlight_node(branch_node_id)
@@ -299,12 +299,12 @@ def handle_graph_create_branch_node(controller: Any, todo: TodoItem, current_ver
 
     focused_edge_ids: List[Optional[str]] = [edge_id] if edge_id else []
     focused_node_ids = [branch_node_id, node_id]
-    controller._dim_unrelated(focused_node_ids, focused_edge_ids)
-    controller._finalize_updates()
+    controller.dim_unrelated(focused_node_ids, focused_edge_ids)
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
-        lambda use_animation, b_id=branch_node_id, nid=node_id, eid=edge_id, b_port=branch_name: controller._overlay_and_focus(
+        lambda use_animation, b_id=branch_node_id, nid=node_id, eid=edge_id, b_port=branch_name: controller.overlay_and_focus(
             b_id,
             nid,
             eid,
@@ -324,10 +324,10 @@ def handle_graph_connect(controller: Any, todo: TodoItem, current_version: int) 
     dst_port = detail.get("dst_port")
 
     if not (src_node_id and dst_node_id):
-        controller._finalize_updates()
+        controller.finalize_updates()
         return
 
-    is_flow_edge = controller._is_flow_edge_between(
+    is_flow_edge = controller.is_flow_edge_between(
         src_node_id, src_port, dst_node_id, dst_port
     )
     controller.view.highlight_edge(edge_id, is_flow_edge=is_flow_edge)
@@ -338,12 +338,12 @@ def handle_graph_connect(controller: Any, todo: TodoItem, current_version: int) 
     else:
         focused_edge_ids = []
     focused_node_ids = [src_node_id, dst_node_id]
-    controller._dim_unrelated(focused_node_ids, focused_edge_ids)
-    controller._finalize_updates()
+    controller.dim_unrelated(focused_node_ids, focused_edge_ids)
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
-        lambda use_animation, s_node=src_node_id, d_node=dst_node_id, eid=edge_id, s_port=src_port, d_port=dst_port: controller._overlay_and_focus(
+        lambda use_animation, s_node=src_node_id, d_node=dst_node_id, eid=edge_id, s_port=src_port, d_port=dst_port: controller.overlay_and_focus(
             s_node,
             d_node,
             eid,
@@ -361,7 +361,7 @@ def handle_graph_connect_merged(controller: Any, todo: TodoItem, current_version
     edges_info = detail.get("edges", []) or []
 
     if not (node1_id and node2_id and edges_info):
-        controller._finalize_updates()
+        controller.finalize_updates()
         return
 
     focused_edge_ids: List[str] = []
@@ -372,7 +372,7 @@ def handle_graph_connect_merged(controller: Any, todo: TodoItem, current_version
         if not edge_id_in_group:
             continue
 
-        is_flow_edge = controller._is_flow_edge_between(
+        is_flow_edge = controller.is_flow_edge_between(
             node1_id, src_port, node2_id, dst_port
         )
         controller.view.highlight_edge(edge_id_in_group, is_flow_edge=is_flow_edge)
@@ -383,8 +383,8 @@ def handle_graph_connect_merged(controller: Any, todo: TodoItem, current_version
         if dst_port:
             controller.view.highlight_port(node2_id, dst_port, is_input=True)
 
-    controller._dim_unrelated([node1_id, node2_id], focused_edge_ids)
-    controller._finalize_updates()
+    controller.dim_unrelated([node1_id, node2_id], focused_edge_ids)
+    controller.finalize_updates()
 
     def _merged_focus(use_animation: bool) -> None:
         if controller.view.overlay_manager and edges_info:
@@ -401,14 +401,16 @@ def handle_graph_connect_merged(controller: Any, todo: TodoItem, current_version
             use_animation=use_animation,
         )
 
-    controller._schedule_focus(current_version, _merged_focus)
+    controller.schedule_focus(current_version, _merged_focus)
 
 
 def handle_template_graph_root(controller: Any, todo: TodoItem, current_version: int) -> None:
-    controller._hide_overlay()
-    controller._finalize_updates()
+    # 图根预览：不需要灰显，需确保恢复上一轮的透明度状态
+    controller.view.restore_all_opacity()
+    controller.hide_overlay()
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
         lambda use_animation: controller.view.fit_all(use_animation=use_animation),
     )
@@ -417,7 +419,7 @@ def handle_template_graph_root(controller: Any, todo: TodoItem, current_version:
 def handle_dynamic_port_step(controller: Any, todo: TodoItem, current_version: int) -> None:
     # 动态端口添加：高亮目标节点并聚焦（与创建/配置类体验一致）
     node_id = todo.detail_info.get("node_id")
-    controller._highlight_single_node_and_focus(
+    controller.highlight_single_node_and_focus(
         node_id=node_id,
         current_version=current_version,
         dim_unrelated=True,
@@ -439,22 +441,22 @@ def handle_graph_signals_overview(controller: Any, todo: TodoItem, current_versi
     if node_ids:
         for node_identifier in node_ids:
             controller.view.highlight_node(node_identifier)
-        controller._dim_unrelated(node_ids, [])
-        controller._hide_overlay()
-        controller._finalize_updates()
+        controller.dim_unrelated(node_ids, [])
+        controller.hide_overlay()
+        controller.finalize_updates()
 
-        controller._schedule_focus(
+        controller.schedule_focus(
             current_version,
-            lambda use_animation, nids=list(node_ids): controller._focus_on_node_group(
+            lambda use_animation, nids=list(node_ids): controller.focus_on_node_group(
                 nids, use_animation=use_animation
             ),
         )
         return
 
-    controller._hide_overlay()
-    controller._finalize_updates()
+    controller.hide_overlay()
+    controller.finalize_updates()
 
-    controller._schedule_focus(
+    controller.schedule_focus(
         current_version,
         lambda use_animation: controller.view.fit_all(use_animation=use_animation),
     )
@@ -462,7 +464,7 @@ def handle_graph_signals_overview(controller: Any, todo: TodoItem, current_versi
 
 def handle_graph_bind_signal(controller: Any, todo: TodoItem, current_version: int) -> None:
     node_id = todo.detail_info.get("node_id")
-    controller._highlight_single_node_and_focus(
+    controller.highlight_single_node_and_focus(
         node_id=node_id,
         current_version=current_version,
         dim_unrelated=True,
@@ -472,7 +474,7 @@ def handle_graph_bind_signal(controller: Any, todo: TodoItem, current_version: i
 
 def handle_graph_bind_struct(controller: Any, todo: TodoItem, current_version: int) -> None:
     node_id = todo.detail_info.get("node_id")
-    controller._highlight_single_node_and_focus(
+    controller.highlight_single_node_and_focus(
         node_id=node_id,
         current_version=current_version,
         dim_unrelated=True,

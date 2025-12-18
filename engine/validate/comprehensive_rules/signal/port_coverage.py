@@ -7,6 +7,7 @@ from engine.graph.common import (
     SIGNAL_LISTEN_STATIC_OUTPUTS,
     SIGNAL_SEND_NODE_TITLE,
     SIGNAL_SEND_STATIC_INPUTS,
+    SIGNAL_ID_HINT_CONSTANT_KEY,
 )
 from engine.nodes.advanced_node_features import SignalDefinition
 from engine.utils.graph.graph_utils import extract_port_names, get_node_display_info
@@ -52,6 +53,10 @@ def validate_signal_ports_for_node(
             present_param_names.add(name)
 
         for const_name in (constants_map.keys() if isinstance(constants_map, dict) else []):
+            # `__signal_id` 属于语义提示用的隐藏常量键（稳定 ID），不对应任何真实端口，
+            # 也不属于信号参数列表；在“参数端口覆盖”校验中必须忽略。
+            if const_name == SIGNAL_ID_HINT_CONSTANT_KEY:
+                continue
             if const_name in static_inputs:
                 continue
             present_param_names.add(str(const_name))
@@ -109,7 +114,7 @@ def validate_signal_ports_for_node(
         node_detail["extra_params"] = sorted(extra)
         issues.append(
             ValidationIssue(
-                level="error",
+                level="warning",
                 category="信号系统",
                 location=location,
                 message="检测到多余的信号参数端口: " + ", ".join(sorted(extra)),

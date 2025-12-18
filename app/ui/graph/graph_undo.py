@@ -183,13 +183,18 @@ class DeleteNodeCommand(Command):
             composite_context = getattr(self.scene, "composite_edit_context", None) or {}
             composite_id = composite_context.get("composite_id")
             manager = composite_context.get("manager")
-            is_read_only_context = bool(composite_context.get("read_only"))
+            if "can_persist" in composite_context:
+                can_persist_context = bool(composite_context.get("can_persist"))
+            else:
+                # 兼容旧字段：read_only=True 表示“逻辑只读（不落盘）”
+                can_persist_context = not bool(composite_context.get("read_only"))
+            is_logic_read_only_context = not can_persist_context
             if composite_id and manager:
                 affected_node_ids = restore_virtual_pins_from_snapshot(
                     manager,
                     composite_id,
                     self.virtual_pin_snapshot,
-                    is_read_only=is_read_only_context,
+                    is_read_only=is_logic_read_only_context,
                 )
                 self.scene._refresh_all_ports(affected_node_ids or None)
 

@@ -24,6 +24,7 @@ from engine.graph.common import (
     STRUCT_BUILD_STATIC_OUTPUTS,
     STRUCT_MODIFY_STATIC_INPUTS,
     STRUCT_MODIFY_STATIC_OUTPUTS,
+    STRUCT_NAME_PORT_NAME,
 )
 from importlib import import_module
 from engine.nodes.port_type_system import is_flow_port_with_context
@@ -139,6 +140,39 @@ def validate_graph(
                 has_constant_value = port.name in node.input_constants
                 is_virtual_pin = virtual_pin_mappings.get((node.id, port.name), False)
                 if not (has_incoming_edge or has_constant_value or is_virtual_pin):
+                    # 结构体节点（拆分/拼装/修改）：
+                    # UI 中允许通过“结构体绑定元数据”或“已出现动态字段端口”来隐式确定结构体，
+                    # 此时源码未显式传入“结构体名”也应视为已配置，避免误报缺线。
+                    if (
+                        getattr(node, "title", "") in STRUCT_NODE_TITLES
+                        and port.name == STRUCT_NAME_PORT_NAME
+                    ):
+                        bound = getattr(model, "get_node_struct_binding", None)
+                        has_binding = False
+                        if callable(bound):
+                            payload = bound(node.id)
+                            has_binding = isinstance(payload, dict) and bool(payload)
+
+                        if has_binding:
+                            continue
+
+                        # 若存在任一“非静态输入端口”（字段端口），也视为已绑定结构体。
+                        static_inputs = set()
+                        if getattr(node, "title", "") == STRUCT_MODIFY_NODE_TITLE:
+                            static_inputs = set(STRUCT_MODIFY_STATIC_INPUTS)
+                        elif getattr(node, "title", "") == STRUCT_BUILD_NODE_TITLE:
+                            static_inputs = set(STRUCT_BUILD_STATIC_INPUTS)
+                        elif getattr(node, "title", "") == STRUCT_SPLIT_NODE_TITLE:
+                            static_inputs = set(STRUCT_SPLIT_STATIC_INPUTS)
+
+                        has_dynamic_field_port = any(
+                            (getattr(p, "name", "") not in static_inputs)
+                            and (not _is_flow(node, getattr(p, "name", ""), False))
+                            for p in (node.inputs or [])
+                        )
+                        if has_dynamic_field_port:
+                            continue
+
                     lo = getattr(node, 'source_lineno', 0)
                     hi = getattr(node, 'source_end_lineno', 0) or lo
                     span_text = f" (第{lo}~{hi}行)" if isinstance(lo, int) and lo > 0 else " (第?~?行)"
@@ -390,460 +424,29 @@ class GraphCodeParser:
         tree: ast.Module,
         graph_model: GraphModel,
     ) -> None:
-        """从类内 register_handlers 调用中推导“信号监听事件”的绑定信息。
+        """已弃用：GraphCodeParser 不再直接写入语义元数据。
 
-        约定：
-        - 处理形如 `self.game.register_event_handler("<literal>", self.on_<任意处理器>, owner=...)` 的调用；
-        - 若 `<literal>` 能解析到已定义信号（signal_id 或 signal_name），则将对应事件节点视为【监听信号】：
-          - 将节点标题改为 `SIGNAL_LISTEN_NODE_TITLE`；
-          - 确保存在输入端口 `SIGNAL_NAME_PORT_NAME`，并回填 `node.input_constants["信号名"]` 供 UI 展示；
-          - 将绑定解析为稳定的 signal_id 写入 `GraphModel.metadata["signal_bindings"]`；
-        - 若 UI/用户已为该节点写入 signal_bindings，则不覆盖绑定，但仍会回填显示用的“信号名”常量。
+        说明：
+        - 历史上该方法会在解析阶段写入 `metadata["signal_bindings"]`；
+        - 现在信号绑定统一由 `engine.graph.semantic.GraphSemanticPass` 覆盖式生成。
         """
-        if not isinstance(tree, ast.Module):
-            return
-
-        # 1) 构建事件名称 → 节点 ID 的映射（按解析顺序对齐 event_flow_order 与 event_flow_titles）。
-        title_to_node_id: Dict[str, str] = {}
-        # 兼容：若事件节点在后续被重命名（例如信号事件统一显示为【监听信号】），
-        # 则使用“event_<方法名>_...”的稳定前缀反查节点 ID。
-        method_base_to_node_id_by_prefix: Dict[str, str] = {}
-        titles = list(graph_model.event_flow_titles or [])
-        ids = list(graph_model.event_flow_order or [])
-        for node_id, title in zip(ids, titles):
-            node = graph_model.nodes.get(node_id)
-            if not node:
-                continue
-            if getattr(node, "category", "") != "事件节点":
-                continue
-            # 标题即事件名称（例如“实体创建时”/“监听信号”）
-            title_to_node_id[str(title)] = str(node_id)
-            # 事件节点 ID 约定：event_<event_name>_<uuid8>
-            node_id_text = str(node_id)
-            if node_id_text.startswith("event_"):
-                body = node_id_text[len("event_") :]
-                underscore_index = body.rfind("_")
-                if underscore_index > 0:
-                    method_base_name = body[:underscore_index]
-                    if method_base_name and method_base_name not in method_base_to_node_id_by_prefix:
-                        method_base_to_node_id_by_prefix[method_base_name] = node_id_text
-
-        if not title_to_node_id:
-            return
-
-        # 2) 定位图类与 register_handlers 方法。
-        target_class: Optional[ast.ClassDef] = None
-        register_func: Optional[ast.FunctionDef] = None
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef):
-                for item in node.body:
-                    if isinstance(item, ast.FunctionDef) and item.name == "register_handlers":
-                        target_class = node
-                        register_func = item
-                        break
-            if register_func is not None:
-                break
-
-        if register_func is None:
-            return
-
-        # 3) 遍历 register_handlers 体内的所有 register_event_handler 调用。
-        from engine.graph.models.graph_model import GraphModel as _GM  # 类型提示友好
-        _ = _GM  # 占位强调依赖关系
-
-        for stmt in register_func.body:
-            for node in ast.walk(stmt):
-                if not isinstance(node, ast.Call):
-                    continue
-                func_expr = node.func
-                if not isinstance(func_expr, ast.Attribute):
-                    continue
-                if func_expr.attr != "register_event_handler":
-                    continue
-
-                args = list(node.args or [])
-                if len(args) < 2:
-                    continue
-
-                event_name_node = args[0]
-                handler_node = args[1]
-
-                if not isinstance(event_name_node, ast.Constant) or not isinstance(
-                    event_name_node.value, str
-                ):
-                    continue
-                raw_event_name = str(event_name_node.value).strip()
-                if not raw_event_name:
-                    continue
-
-                if not (
-                    isinstance(handler_node, ast.Attribute)
-                    and isinstance(handler_node.value, ast.Name)
-                    and handler_node.value.id == "self"
-                    and isinstance(handler_node.attr, str)
-                    and handler_node.attr.startswith("on_")
-                ):
-                    continue
-
-                method_base_name = handler_node.attr[3:]  # 去掉前缀 on_
-                if not method_base_name:
-                    continue
-
-                node_id = title_to_node_id.get(method_base_name) or method_base_to_node_id_by_prefix.get(method_base_name)
-                if not node_id:
-                    continue
-
-                event_node = graph_model.nodes.get(node_id)
-                if not event_node:
-                    continue
-
-                # 将 register_event_handler 中的事件名称作为“信号标识字面量”尝试解析。
-                resolved_id = self._resolve_signal_id_from_literal(raw_event_name)
-
-                # 仅当确实解析到已定义信号时，才将该事件视为【监听信号】。
-                # 这样不会误把普通引擎事件或自定义事件名改成监听信号。
-                if self._signal_repo is None:
-                    signal_module = import_module("engine.signal")
-                    get_repo = getattr(signal_module, "get_default_signal_repository")
-                    self._signal_repo = get_repo()
-                resolved_payload = self._signal_repo.get_payload(resolved_id)  # type: ignore[union-attr]
-                if not (isinstance(resolved_payload, dict) and resolved_payload):
-                    continue
-
-                # ===== 1) 事件节点表现为【监听信号】并回填“信号名”选择端口 =====
-                if getattr(event_node, "title", "") != SIGNAL_LISTEN_NODE_TITLE:
-                    event_node.title = SIGNAL_LISTEN_NODE_TITLE
-                    # 同步 event_flow_titles，避免事件列表/分组仍显示旧标题
-                    for idx, existing_id in enumerate(list(graph_model.event_flow_order or [])):
-                        if str(existing_id) == str(node_id):
-                            if graph_model.event_flow_titles is not None and idx < len(graph_model.event_flow_titles):
-                                graph_model.event_flow_titles[idx] = SIGNAL_LISTEN_NODE_TITLE
-                            break
-
-                # 确保存在“信号名”输入端口（事件节点在 IR 层可能没有输入端口）
-                if not any(getattr(p, "name", "") == SIGNAL_NAME_PORT_NAME for p in (getattr(event_node, "inputs", None) or [])):
-                    event_node.inputs = list(getattr(event_node, "inputs", []) or [])
-                    event_node.inputs.append(PortModel(name=SIGNAL_NAME_PORT_NAME, is_input=True))
-
-                # 用显示名回填，便于 UI 直接展示（即使 register_event_handler 用的是 signal_id）
-                display_name = str(resolved_payload.get("signal_name") or "").strip()
-                event_node.input_constants.setdefault(SIGNAL_NAME_PORT_NAME, display_name or raw_event_name)
-
-                # ===== 2) 写入稳定的 signal_id 绑定（若 UI 已配置则不覆盖） =====
-                existing_signal_id = graph_model.get_node_signal_id(node_id)
-                if not existing_signal_id:
-                    graph_model.set_node_signal_binding(node_id, resolved_id)
+        _ = (tree, graph_model)
+        return
 
     def _resolve_signal_id_from_literal(self, literal: str) -> str:
-        """将 register_event_handler 中的事件名字面量解析为稳定的 signal_id。
-
-        解析策略：
-        - 若 literal 本身就是一个合法的 signal_id（在全局信号定义中存在），则直接返回该 ID；
-        - 否则按显示名（signal_name）尝试解析；
-        - 解析失败时返回原始 literal，以便后续信号校验规则给出“信号不存在”等更具体的提示。
-        """
-        text = str(literal or "").strip()
-        if not text:
-            return text
-
-        if self._signal_repo is None:
-            signal_module = import_module("engine.signal")
-            get_repo = getattr(signal_module, "get_default_signal_repository")
-            self._signal_repo = get_repo()
-
-        # 1) 直接作为 ID 查询
-        payload = self._signal_repo.get_payload(text)
-        if isinstance(payload, dict) and payload:
-            return text
-
-        # 2) 按显示名称解析 ID
-        resolved_by_name = self._signal_repo.resolve_id_by_name(text)
-        if resolved_by_name:
-            return resolved_by_name
-
-        # 3) 保留原文，交由后续规则处理
-        return text
+        """已弃用：仅保留签名以避免旧代码导入时报错。"""
+        return str(literal or "").strip()
 
     def _apply_struct_bindings_from_code(
         self,
         tree: ast.Module,
         graph_model: GraphModel,
     ) -> None:
-        """从 Graph Code 中推导结构体节点的默认绑定信息。
+        """已弃用：GraphCodeParser 不再直接写入语义元数据。
 
-        约定与边界：
-        - 直接从代码中的结构体节点调用中提取"结构体名"参数，根据结构体名查找定义；
-        - 支持所有类型的结构体（basic、ingame_save 等），不再限制为 basic 类型；
-        - 仅为尚未在 ``GraphModel.metadata['struct_bindings']`` 中出现绑定记录的节点写入默认绑定；
-        - 对于每个结构体节点，默认将 `field_names` 设置为当前图模型中已存在、且在目标结构体定义里
-          出现的字段端口名集合（按出现顺序去重），从而让"拼装/拆分/修改结构体"节点在编辑器中只生成
-          与当前代码实际使用字段一致的数据端口。
+        说明：
+        - 历史上该方法会在解析阶段写入 `metadata["struct_bindings"]`；
+        - 现在结构体绑定统一由 `engine.graph.semantic.GraphSemanticPass` 覆盖式生成。
         """
-        if not isinstance(tree, ast.Module):
-            return
-
-        from engine.resources.definition_schema_view import get_default_definition_schema_view
-
-        schema_view = get_default_definition_schema_view()
-        all_struct_definitions = schema_view.get_all_struct_definitions()
-        if not all_struct_definitions:
-            return
-
-        # 构建"结构体名 → 结构体 ID"的反向索引，用于根据代码中的"结构体名"参数查找结构体定义
-        struct_name_to_id: Dict[str, str] = {}
-        for struct_id, struct_payload in all_struct_definitions.items():
-            if not isinstance(struct_payload, dict):
-                continue
-            name_raw = struct_payload.get("name")
-            name_text = str(name_raw).strip() if isinstance(name_raw, str) else ""
-            if name_text:
-                struct_name_to_id[name_text] = struct_id
-            # 同时用 struct_id 作为名字的后备（兼容 struct_xxx 格式）
-            struct_name_to_id[struct_id] = struct_id
-
-        existing_bindings = graph_model.get_struct_bindings()
-
-        # 构造"结构体节点 → 源码行范围"索引，便于将 AST 中的调用与具体节点对应起来。
-        span_records: List[Tuple[str, int, int, str]] = []
-        for raw_node_id, node in graph_model.nodes.items():
-            node_title = getattr(node, "title", "") or ""
-            if node_title not in STRUCT_NODE_TITLES:
-                continue
-            start_line = getattr(node, "source_lineno", 0) or 0
-            end_line = getattr(node, "source_end_lineno", 0) or 0
-            if not isinstance(start_line, int) or start_line <= 0:
-                continue
-            if not isinstance(end_line, int) or end_line < start_line:
-                end_line = start_line
-            span_records.append((node_title, start_line, end_line, str(raw_node_id)))
-
-        # 优先使用“精确 span”匹配：IR 层对函数调用节点通常直接取 call_node 的 lineno/end_lineno，
-        # 这样比“重叠范围最大”更稳定，也能显著降低误匹配概率。
-        span_exact_index: Dict[Tuple[str, int, int], List[str]] = {}
-        for title, start, end, node_id in span_records:
-            span_exact_index.setdefault((title, start, end), []).append(node_id)
-
-        def _get_ast_span(ast_node: ast.AST) -> Tuple[int, int]:
-            lineno = getattr(ast_node, "lineno", 0) or 0
-            end_lineno = getattr(ast_node, "end_lineno", lineno) or lineno
-            if not isinstance(lineno, int) or lineno <= 0:
-                return 0, 0
-            if not isinstance(end_lineno, int) or end_lineno < lineno:
-                end_lineno = lineno
-            return lineno, end_lineno
-
-        def _match_struct_node_id(node_title: str, lineno: int, end_lineno: int) -> Optional[str]:
-            exact_candidates = span_exact_index.get((node_title, lineno, end_lineno))
-            if exact_candidates:
-                if len(exact_candidates) == 1:
-                    return exact_candidates[0]
-                # 极少数情况下可能出现同标题同 span 的重复节点（例如复制/合并导致的异常状态）。
-                # 这里选择一个稳定顺序，避免随机行为。
-                return sorted(exact_candidates)[0]
-
-            best_id: Optional[str] = None
-            best_overlap = 0
-            for title, start, end, candidate_id in span_records:
-                if title != node_title:
-                    continue
-                lo = max(start, lineno)
-                hi = min(end, end_lineno)
-                if lo > hi:
-                    continue
-                overlap = hi - lo + 1
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_id = candidate_id
-            return best_id
-
-        def _extract_struct_name_from_call(call_node: ast.Call) -> Optional[str]:
-            """从调用中提取"结构体名"参数的常量值"""
-            for keyword in call_node.keywords or []:
-                if keyword.arg == "结构体名":
-                    if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
-                        return keyword.value.value.strip()
-            return None
-
-        def _get_struct_info(struct_name_text: str) -> Optional[Tuple[str, str, Dict[str, Any], List[str]]]:
-            """根据结构体名获取结构体信息：(struct_id, struct_name, payload, field_names)"""
-            struct_id = struct_name_to_id.get(struct_name_text)
-            if not struct_id:
-                return None
-            struct_payload = all_struct_definitions.get(struct_id)
-            if not isinstance(struct_payload, dict):
-                return None
-
-            name_raw = struct_payload.get("name")
-            struct_name = (
-                str(name_raw).strip()
-                if isinstance(name_raw, str) and str(name_raw).strip()
-                else struct_id
-            )
-
-            # 提取字段列表
-            defined_field_names: List[str] = []
-            value_entries = struct_payload.get("value")
-            if isinstance(value_entries, Sequence):
-                for entry in value_entries:
-                    if not isinstance(entry, Mapping):
-                        continue
-                    raw_name = entry.get("key")
-                    name_text = str(raw_name).strip() if isinstance(raw_name, str) else ""
-                    if name_text and name_text not in defined_field_names:
-                        defined_field_names.append(name_text)
-
-            return struct_id, struct_name, struct_payload, defined_field_names
-
-        # 收集每个节点的绑定信息：{node_id: (struct_id, struct_name, field_names)}
-        node_binding_info: Dict[str, Tuple[str, str, List[str]]] = {}
-
-        # 1) 处理"拼装结构体 / 修改结构体"调用：从"结构体名"参数提取结构体，字段名来源于关键字参数。
-        for ast_node in ast.walk(tree):
-            if not isinstance(ast_node, ast.Call):
-                continue
-
-            func_obj = ast_node.func
-            func_name = ""
-            if isinstance(func_obj, ast.Name):
-                func_name = func_obj.id
-            elif isinstance(func_obj, ast.Attribute):
-                func_name = func_obj.attr
-            if not func_name:
-                continue
-
-            if func_name in (STRUCT_BUILD_NODE_TITLE, STRUCT_MODIFY_NODE_TITLE):
-                lineno, end_lineno = _get_ast_span(ast_node)
-                if lineno <= 0:
-                    continue
-                matched_node_id = _match_struct_node_id(func_name, lineno, end_lineno)
-                if not matched_node_id:
-                    continue
-
-                # 提取"结构体名"参数
-                struct_name_text = _extract_struct_name_from_call(ast_node)
-                if not struct_name_text:
-                    continue
-
-                struct_info = _get_struct_info(struct_name_text)
-                if not struct_info:
-                    continue
-                struct_id, struct_name, struct_payload, defined_field_names = struct_info
-                defined_field_name_set = set(defined_field_names)
-
-                # 确定静态输入端口
-                if func_name == STRUCT_BUILD_NODE_TITLE:
-                    static_inputs = set(STRUCT_BUILD_STATIC_INPUTS)
-                else:
-                    static_inputs = set(STRUCT_MODIFY_STATIC_INPUTS)
-
-                # 收集代码中实际使用的字段名
-                build_or_modify_used_field_names: List[str] = []
-                for keyword in ast_node.keywords or []:
-                    arg_name = keyword.arg
-                    if not isinstance(arg_name, str) or not arg_name:
-                        continue
-                    if arg_name in static_inputs:
-                        continue
-                    if arg_name not in defined_field_name_set:
-                        continue
-                    if arg_name not in build_or_modify_used_field_names:
-                        build_or_modify_used_field_names.append(arg_name)
-
-                node_binding_info[matched_node_id] = (
-                    struct_id,
-                    struct_name,
-                    build_or_modify_used_field_names,
-                )
-
-        # 2) 处理"拆分结构体"：从"结构体名"参数提取结构体，字段名来源于左侧的多目标赋值。
-        for ast_node in ast.walk(tree):
-            if not isinstance(ast_node, (ast.Assign, ast.AnnAssign)):
-                continue
-
-            if isinstance(ast_node, ast.Assign):
-                value_node = ast_node.value
-            else:
-                value_node = ast_node.value
-
-            if not isinstance(value_node, ast.Call):
-                continue
-
-            func_obj = value_node.func
-            func_name = ""
-            if isinstance(func_obj, ast.Name):
-                func_name = func_obj.id
-            elif isinstance(func_obj, ast.Attribute):
-                func_name = func_obj.attr
-            if func_name != STRUCT_SPLIT_NODE_TITLE:
-                continue
-
-            lineno, end_lineno = _get_ast_span(value_node)
-            if lineno <= 0:
-                continue
-            matched_node_id = _match_struct_node_id(STRUCT_SPLIT_NODE_TITLE, lineno, end_lineno)
-            if not matched_node_id:
-                continue
-
-            # 提取"结构体名"参数
-            struct_name_text = _extract_struct_name_from_call(value_node)
-            if not struct_name_text:
-                continue
-
-            struct_info = _get_struct_info(struct_name_text)
-            if not struct_info:
-                continue
-            struct_id, struct_name, struct_payload, defined_field_names = struct_info
-            defined_field_name_set = set(defined_field_names)
-
-            # 收集代码中实际使用的字段名（从赋值目标）
-            split_used_field_names: List[str] = []
-
-            def _collect_names_from_target(target: ast.AST) -> None:
-                if isinstance(target, ast.Name):
-                    name_text = target.id.strip()
-                    if not name_text:
-                        return
-                    if name_text not in defined_field_name_set:
-                        return
-                    if name_text not in split_used_field_names:
-                        split_used_field_names.append(name_text)
-                elif isinstance(target, ast.Tuple):
-                    for element in target.elts:
-                        _collect_names_from_target(element)
-
-            if isinstance(ast_node, ast.Assign):
-                for target in ast_node.targets:
-                    _collect_names_from_target(target)
-            else:
-                _collect_names_from_target(ast_node.target)
-
-            node_binding_info[matched_node_id] = (struct_id, struct_name, split_used_field_names)
-
-        # 3) 写回绑定：保留已有绑定，未显式配置的节点按"代码中实际使用字段"推导字段列表。
-        for node_id, node in graph_model.nodes.items():
-            node_title = getattr(node, "title", "") or ""
-            if node_title not in STRUCT_NODE_TITLES:
-                continue
-
-            existing_binding = existing_bindings.get(str(node_id))
-            if isinstance(existing_binding, dict):
-                # 避免覆盖 UI 或其它工具已写入的绑定信息。
-                continue
-
-            binding_tuple = node_binding_info.get(str(node_id))
-            if not binding_tuple:
-                continue
-
-            struct_id_text, struct_name, used_field_names = binding_tuple
-
-            binding_payload: Dict[str, Any] = {
-                "struct_id": struct_id_text,
-                "struct_name": struct_name,
-            }
-            # 若当前节点在代码中已经通过字段名显式使用了一部分结构体字段，
-            # 则将这些字段作为默认的 field_names 写入绑定，避免在编辑器中
-            # 再次自动扩展为"全部字段"。
-            if used_field_names:
-                binding_payload["field_names"] = list(used_field_names)
-
-            graph_model.set_node_struct_binding(node_id, binding_payload)
+        _ = (tree, graph_model)
+        return

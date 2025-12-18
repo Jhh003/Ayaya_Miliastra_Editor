@@ -29,7 +29,7 @@ from app.ui.graph.library_pages.library_scaffold import (
     LibraryPageMixin,
     LibrarySelection,
 )
-from app.models.view_modes import ViewMode
+from app.ui.graph.library_pages.library_view_scope import describe_resource_view_scope
 
 
 class CombatPresetsWidget(
@@ -41,14 +41,8 @@ class CombatPresetsWidget(
 ):
     """战斗预设界面 - 文件列表形式"""
 
-    # 当玩家模板被选中时发射，参数为 template_id
-    player_template_selected = QtCore.pyqtSignal(str)
-    # 当职业被选中时发射，参数为 class_id
-    player_class_selected = QtCore.pyqtSignal(str)
-    # 当技能被选中时发射，参数为 skill_id
-    skill_selected = QtCore.pyqtSignal(str)
-    # 当道具被选中时发射，参数为 item_id
-    item_selected = QtCore.pyqtSignal(str)
+    # 统一库页选中事件：发射 LibrarySelection（或 None 表示无有效选中）。
+    selection_changed = QtCore.pyqtSignal(object)
     # 当任意战斗预设完成增删改操作时发射，用于上层触发保存或刷新其它视图
     data_changed = QtCore.pyqtSignal(LibraryChangeEvent)
 
@@ -136,31 +130,12 @@ class CombatPresetsWidget(
         """设置当前存档或全局视图并刷新列表（统一库页入口）。"""
         self.current_package = package
         self._refresh_items()
-        # 初次加载时仅在战斗预设模式下才默认选中玩家模板，避免后台模式触发无谓处理
-        if self.item_list.currentRow() < 0 and self._is_combat_mode_active():
-            self._select_first_player_item()
-
-    def set_package(self, package: Union[PackageView, GlobalResourceView]) -> None:
-        """兼容旧接口，内部委托给 set_context。"""
-        self.set_context(package)
 
     def ensure_default_selection(self) -> None:
         """在战斗预设模式下确保存在一个默认选中项，用于同步右侧详情。"""
         if self.item_list.currentRow() >= 0:
             return
         self._select_first_player_item()
-
-    def _is_combat_mode_active(self) -> bool:
-        """判断宿主窗口当前是否处于战斗预设视图模式。"""
-        main_window = self.window()
-        if main_window is None:
-            return False
-        central_stack = getattr(main_window, "central_stack", None)
-        if central_stack is None:
-            return False
-        current_index = central_stack.currentIndex()
-        current_mode = ViewMode.from_index(current_index)
-        return current_mode == ViewMode.COMBAT
 
     def reload(self) -> None:
         """在当前上下文下全量刷新战斗预设列表并负责选中恢复。"""
@@ -176,7 +151,10 @@ class CombatPresetsWidget(
         return LibrarySelection(
             kind="combat",
             id=item_id,
-            context={"section_key": section_key, "scope": self._describe_current_scope()},
+            context={
+                "section_key": section_key,
+                "scope": describe_resource_view_scope(self.current_package),
+            },
         )
 
     def set_selection(self, selection: Optional[LibrarySelection]) -> None:
@@ -207,22 +185,6 @@ class CombatPresetsWidget(
                 self.item_list.setCurrentItem(item)
                 break
 
-    def get_current_selection(self) -> Optional[Tuple[str, str]]:
-        """返回当前列表中选中的 (section_key, item_id)（兼容旧接口）。
-
-        无选中条目或条目未绑定有效业务键时返回 None。
-        """
-        selection = self.get_selection()
-        if selection is None:
-            return None
-        section_key = ""
-        if isinstance(selection.context, dict):
-            raw_key = selection.context.get("section_key")
-            if isinstance(raw_key, str):
-                section_key = raw_key
-        if not section_key:
-            return None
-        return section_key, selection.id
 
     def _on_category_clicked(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
         """分类点击"""
@@ -288,14 +250,7 @@ class CombatPresetsWidget(
                 False,
                 context={"source": "combat", "section_key": previous_section_key},
             )
-            if previous_section_key == "player_template":
-                self.player_template_selected.emit("")
-            elif previous_section_key == "player_class":
-                self.player_class_selected.emit("")
-            elif previous_section_key == "skill":
-                self.skill_selected.emit("")
-            elif previous_section_key == "item":
-                self.item_selected.emit("")
+            self.selection_changed.emit(None)
 
         rebuild_list_with_preserved_selection(
             self.item_list,
@@ -323,7 +278,8 @@ class CombatPresetsWidget(
                 break
 
         if not has_player_template:
-            self.player_template_selected.emit("")
+            self.notify_selection_state(False, context={"source": "combat", "section_key": "player_template"})
+            self.selection_changed.emit(None)
             return
 
         if self.current_category in ("all", "player_template"):
@@ -331,14 +287,6 @@ class CombatPresetsWidget(
             current_user_data = self._get_item_user_data(current_item)
             if not current_user_data or current_user_data[0] != "player_template":
                 self._select_first_player_item()
-
-    def _describe_current_scope(self) -> str:
-        """根据当前资源视图返回简单 scope 标识，用于变更事件上下文。"""
-        if isinstance(self.current_package, PackageView):
-            return "package"
-        if isinstance(self.current_package, GlobalResourceView):
-            return "global"
-        return "unknown"
 
     def _append_section_rows(self, section: BaseCombatPresetSection) -> None:
         """将某个分类的所有行加入列表。"""
@@ -419,11 +367,7 @@ class CombatPresetsWidget(
         if not user_data:
             print("[COMBAT-PRESETS] selection changed: <none>")
             self.notify_selection_state(False, context={"source": "combat", "section_key": None})
-            # 清空所有战斗详情上下文
-            self.player_template_selected.emit("")
-            self.player_class_selected.emit("")
-            self.skill_selected.emit("")
-            self.item_selected.emit("")
+            self.selection_changed.emit(None)
             return
         section_key, item_id = user_data
         print(
@@ -431,29 +375,21 @@ class CombatPresetsWidget(
             f"section_key={section_key!r}, item_id={item_id!r}",
         )
 
-        def clear_other_combat_contexts(selected_section_key: str) -> None:
-            """先清空非当前分类的上下文，避免空 ID 触发的重置盖掉新选中。"""
-            if selected_section_key != "player_template":
-                self.player_template_selected.emit("")
-            if selected_section_key != "player_class":
-                self.player_class_selected.emit("")
-            if selected_section_key != "skill":
-                self.skill_selected.emit("")
-            if selected_section_key != "item":
-                self.item_selected.emit("")
+        if not item_id:
+            self.notify_selection_state(False, context={"source": "combat", "section_key": section_key})
+            self.selection_changed.emit(None)
+            return
 
-        if section_key == "player_template" and item_id:
-            clear_other_combat_contexts("player_template")
-            self.player_template_selected.emit(item_id)
-        elif section_key == "player_class" and item_id:
-            clear_other_combat_contexts("player_class")
-            self.player_class_selected.emit(item_id)
-        elif section_key == "skill" and item_id:
-            clear_other_combat_contexts("skill")
-            self.skill_selected.emit(item_id)
-        elif section_key == "item" and item_id:
-            clear_other_combat_contexts("item")
-            self.item_selected.emit(item_id)
+        selection = LibrarySelection(
+            kind="combat",
+            id=item_id,
+            context={
+                "section_key": section_key,
+                "scope": describe_resource_view_scope(self.current_package),
+            },
+        )
+        self.notify_selection_state(True, context={"source": "combat", "section_key": section_key})
+        self.selection_changed.emit(selection)
 
     def _on_item_clicked(self, _item: QtWidgets.QListWidgetItem) -> None:
         """列表项单击时，同步触发选中逻辑，避免当前已选中条目首次点击不刷新右侧面板。"""
@@ -522,7 +458,10 @@ class CombatPresetsWidget(
                 kind="combat",
                 id=new_item_id,
                 operation="create",
-                context={"section_key": new_section_key, "scope": self._describe_current_scope()},
+                context={
+                    "section_key": new_section_key,
+                    "scope": describe_resource_view_scope(self.current_package),
+                },
             )
             self.data_changed.emit(event)
 
@@ -577,7 +516,7 @@ class CombatPresetsWidget(
                     operation="delete",
                     context={
                         "section_key": section_key,
-                        "scope": self._describe_current_scope(),
+                        "scope": describe_resource_view_scope(self.current_package),
                     },
                 )
                 self.data_changed.emit(event)

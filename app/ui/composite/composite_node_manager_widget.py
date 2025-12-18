@@ -31,6 +31,7 @@ from app.ui.foundation.theme_manager import Colors, Sizes, ThemeManager
 from app.ui.foundation.toast_notification import ToastNotification
 from app.ui.graph.graph_scene import GraphScene
 from app.ui.graph.graph_view import GraphView
+from app.models.edit_session_capabilities import EditSessionCapabilities
 from app.ui.graph.library_mixins import SearchFilterMixin, ToolbarMixin, ConfirmDialogMixin
 from app.ui.graph.library_pages.library_scaffold import DualPaneLibraryScaffold
 from app.ui.panels.panel_scaffold import SectionCard
@@ -152,7 +153,7 @@ class CompositeNodeManagerWidget(
     """复合节点管理库页面。
 
     - 左侧：复合节点库树（按文件夹组织）；
-    - 右侧：复合节点子图编辑/预览区（默认逻辑只读，仅在内存中尝试修改）。
+    - 右侧：复合节点子图预览/编辑区（默认只读预览；显式开启保存能力后才允许落盘）。
     """
 
     composite_library_updated = QtCore.pyqtSignal()
@@ -164,11 +165,13 @@ class CompositeNodeManagerWidget(
         node_library: dict,
         parent: Optional[QtWidgets.QWidget] = None,
         resource_manager: Optional[ResourceManager] = None,
+        *,
+        edit_session_capabilities: Optional[EditSessionCapabilities] = None,
     ) -> None:
         super().__init__(
             parent,
             title="复合节点库",
-            description="浏览复合节点结构并在中间区域加载其子图进行预览编辑（默认逻辑只读，不落盘）。",
+            description="浏览复合节点结构并在中间区域加载其子图进行预览；默认可交互预览但不自动落盘（避免误覆盖手写源码结构）。",
         )
 
         self.workspace_path = workspace_path
@@ -176,8 +179,20 @@ class CompositeNodeManagerWidget(
         self._service = CompositeNodeService(workspace_path)
         # 向下兼容：外部仍可通过 .manager 访问引擎侧 CompositeNodeManager
         self.manager: CompositeNodeManager = self._service.manager
-        # 逻辑只读：禁止通过 UI 写回复合节点实现，仅更新当前进程内配置
-        self.composite_logic_read_only: bool = True
+        # 复合节点编辑会话能力（单一真源）：
+        # - 默认：可交互预览（允许移动/连线等交互，但不落盘）
+        # - 开启：完整编辑（允许校验 + 落盘保存）
+        self._edit_session_capabilities: EditSessionCapabilities = (
+            edit_session_capabilities
+            if isinstance(edit_session_capabilities, EditSessionCapabilities)
+            else EditSessionCapabilities.interactive_preview()
+        )
+        self._persist_toggle: Optional[QtWidgets.QAbstractButton] = None
+
+        # 复合节点“元信息/虚拟引脚”脏标记（graph 的脏状态由 GraphEditorController 维护）。
+        self._composite_meta_dirty: bool = False
+        # 防止在程序性选中/回滚选中时递归触发 itemClicked 逻辑。
+        self._suppress_tree_item_clicked: bool = False
 
         # 当前编辑的复合节点
         self.current_composite: Optional[CompositeNodeConfig] = None
@@ -205,6 +220,26 @@ class CompositeNodeManagerWidget(
         self._init_graph_editor(resource_manager)
         self._refresh_composite_list()
 
+    # ------------------------------------------------------------------ 能力（单一真源）
+
+    @property
+    def edit_session_capabilities(self) -> EditSessionCapabilities:
+        return self._edit_session_capabilities
+
+    @property
+    def can_persist_composite(self) -> bool:
+        """复合节点页是否允许写回复合节点文件（落盘）。"""
+        return bool(self._edit_session_capabilities.can_persist)
+
+    def _set_edit_session_capabilities(self, capabilities: EditSessionCapabilities) -> None:
+        """更新能力，并同步到 GraphEditorController/GraphScene 与 UI 控件启用状态。"""
+        self._edit_session_capabilities = capabilities
+        if self.graph_editor_controller is not None:
+            self.graph_editor_controller.set_edit_session_capabilities(capabilities)
+        if self.graph_scene is not None:
+            self.graph_scene.set_edit_session_capabilities(capabilities)
+        self._apply_persist_controls_state()
+
     # ------------------------------------------------------------------ UI 装配
 
     def _build_toolbar_and_search(self) -> None:
@@ -214,6 +249,13 @@ class CompositeNodeManagerWidget(
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         toolbar_layout.setSpacing(Sizes.SPACING_SMALL)
         self.init_toolbar(toolbar_layout)
+
+        # 保存能力开关：默认可交互预览（不落盘）；显式开启后允许保存与库结构操作。
+        persist_toggle = QtWidgets.QCheckBox("允许保存", toolbar_container)
+        persist_toggle.setChecked(bool(self._edit_session_capabilities.can_persist))
+        persist_toggle.setToolTip("开启后：允许保存复合节点到文件（必要时会提示覆盖源码并转换为 payload 格式）。")
+        persist_toggle.toggled.connect(self._on_persist_toggled)
+        self._persist_toggle = persist_toggle
 
         self._add_node_button = QtWidgets.QPushButton("+ 新建节点", toolbar_container)
         self._add_folder_button = QtWidgets.QPushButton("+ 新建文件夹", toolbar_container)
@@ -231,6 +273,7 @@ class CompositeNodeManagerWidget(
         self.connect_search(self._search_line_edit, self._on_search_text_changed, placeholder="搜索复合节点...")
 
         buttons: list[QtWidgets.QAbstractButton] = [
+            persist_toggle,
             self._add_node_button,
             self._add_folder_button,
             self._delete_button,
@@ -238,11 +281,7 @@ class CompositeNodeManagerWidget(
         self.setup_toolbar_with_search(toolbar_layout, buttons, self._search_line_edit)
         self.set_status_widget(toolbar_container)
 
-        # 只读模式下禁用所有会修改库结构的按钮
-        if self.composite_logic_read_only:
-            for button in buttons:
-                button.setEnabled(False)
-                button.setToolTip("只读模式：复合节点库仅用于浏览与预览，请在 Python 文件中维护复合节点与文件夹结构。")
+        self._apply_persist_controls_state()
 
     def _build_panes(self) -> None:
         """构建左树 + 右编辑区双栏布局。"""
@@ -253,7 +292,7 @@ class CompositeNodeManagerWidget(
         composite_tree.itemClicked.connect(self._on_tree_item_clicked)
         composite_tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         composite_tree.customContextMenuRequested.connect(self._show_context_menu)
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             composite_tree.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.NoDragDrop)
             composite_tree.setAcceptDrops(False)
         else:
@@ -281,9 +320,9 @@ class CompositeNodeManagerWidget(
         self.graph_view.node_library = self.node_library
         right_layout.addWidget(self.graph_view)
 
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             self.save_button.setEnabled(False)
-            self.save_button.setToolTip("只读模式：复合节点不允许从 UI 保存逻辑实现。")
+            self.save_button.setToolTip("预览模式：复合节点不允许从 UI 保存到文件；可勾选顶部“允许保存”开启落盘。")
 
         left_section_title = "复合节点库"
         left_section_description = "按文件夹浏览复合节点，选中条目将在右侧加载相应子图用于预览与虚拟引脚配置。"
@@ -309,15 +348,20 @@ class CompositeNodeManagerWidget(
             return
 
         initial_model = GraphModel.deserialize({"nodes": [], "edges": [], "graph_variables": []})
-        initial_scene = GraphScene(initial_model, node_library=self.node_library)
+        initial_scene = GraphScene(
+            initial_model,
+            read_only=bool(self._edit_session_capabilities.is_read_only),
+            node_library=self.node_library,
+            edit_session_capabilities=self._edit_session_capabilities,
+        )
         self.graph_editor_controller = GraphEditorController(
             resource_manager=resource_manager,
             model=initial_model,
             scene=initial_scene,
             view=self.graph_view,
             node_library=self.node_library,
+            edit_session_capabilities=self._edit_session_capabilities,
         )
-        self.graph_editor_controller.logic_read_only = True
         self.graph_model = initial_model
         self.graph_scene = initial_scene
 
@@ -448,6 +492,8 @@ class CompositeNodeManagerWidget(
 
     def _on_tree_item_clicked(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
         """树项点击事件：加载选中的复合节点。"""
+        if self._suppress_tree_item_clicked:
+            return
         _ = column
         item_data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not isinstance(item_data, dict):
@@ -455,13 +501,15 @@ class CompositeNodeManagerWidget(
         if item_data.get("type") != "node":
             return
 
-        if self.current_composite_id:
-            self._save_current_composite()
-
         composite_id_value = item_data.get("id")
         composite_id = str(composite_id_value or "")
         if not composite_id:
             return
+
+        if self.current_composite_id and self.current_composite_id != composite_id:
+            if not self._confirm_leave_current_composite():
+                self._restore_tree_selection(self.current_composite_id)
+                return
 
         composite_config = self._service.load_composite(composite_id, ensure_subgraph=True)
         if composite_config is None:
@@ -470,6 +518,7 @@ class CompositeNodeManagerWidget(
 
         self.current_composite = composite_config
         self.current_composite_id = composite_id
+        self._composite_meta_dirty = False
         self._load_composite_to_ui(composite_config)
 
         print(f"[复合节点] 选中节点: {composite_config.node_name} (ID: {composite_id})")
@@ -497,6 +546,77 @@ class CompositeNodeManagerWidget(
 
         self._load_graph(composite.sub_graph)
 
+    def _restore_tree_selection(self, composite_id: str) -> None:
+        """将左侧树的选中项回滚到指定复合节点（不触发加载）。"""
+        if not composite_id:
+            return
+        self._suppress_tree_item_clicked = True
+        try:
+            self._select_node_in_tree(composite_id)
+        finally:
+            self._suppress_tree_item_clicked = False
+
+    def _has_unsaved_changes(self) -> bool:
+        """判断当前复合节点是否存在未保存的修改。"""
+        graph_dirty = False
+        if self.graph_editor_controller is not None:
+            graph_dirty = bool(self.graph_editor_controller.is_dirty)
+        return graph_dirty or self._composite_meta_dirty
+
+    def _confirm_leave_current_composite(self) -> bool:
+        """切换复合节点前确认：仅在有脏改动时询问是否保存/放弃/取消切换。"""
+        if not self.current_composite or not self.current_composite_id:
+            return True
+        if not self._has_unsaved_changes():
+            return True
+
+        # 预览模式：不允许保存，直接询问是否放弃修改（修改理论上不应产生，但仍防御 UI 误触发）。
+        if not self.can_persist_composite:
+            message_box = QtWidgets.QMessageBox(self)
+            message_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            message_box.setWindowTitle("未保存修改")
+            message_box.setText(f"复合节点“{self.current_composite.node_name}”存在未保存的修改。\n只读模式下无法保存，切换将丢失这些修改。")
+            message_box.setStandardButtons(
+                QtWidgets.QMessageBox.StandardButton.Discard | QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            discard_button = message_box.button(QtWidgets.QMessageBox.StandardButton.Discard)
+            if discard_button is not None:
+                discard_button.setText("放弃修改")
+            cancel_button = message_box.button(QtWidgets.QMessageBox.StandardButton.Cancel)
+            if cancel_button is not None:
+                cancel_button.setText("取消")
+            message_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+            reply = message_box.exec()
+            return reply == QtWidgets.QMessageBox.StandardButton.Discard
+
+        message_box = QtWidgets.QMessageBox(self)
+        message_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        message_box.setWindowTitle("未保存修改")
+        message_box.setText(f"复合节点“{self.current_composite.node_name}”有未保存的修改。\n是否在切换前保存？")
+        message_box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Save
+            | QtWidgets.QMessageBox.StandardButton.Discard
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        save_button = message_box.button(QtWidgets.QMessageBox.StandardButton.Save)
+        if save_button is not None:
+            save_button.setText("保存")
+        discard_button = message_box.button(QtWidgets.QMessageBox.StandardButton.Discard)
+        if discard_button is not None:
+            discard_button.setText("不保存")
+        cancel_button = message_box.button(QtWidgets.QMessageBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.setText("取消")
+        message_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Save)
+
+        reply = message_box.exec()
+        if reply == QtWidgets.QMessageBox.StandardButton.Cancel:
+            return False
+        if reply == QtWidgets.QMessageBox.StandardButton.Save:
+            self._save_current_composite()
+            return True
+        return True
+
     def _load_graph(self, graph_data: dict) -> None:
         """加载子图到编辑器（优先复用 GraphEditorController）。"""
         if not graph_data:
@@ -507,7 +627,7 @@ class CompositeNodeManagerWidget(
                 "composite_id": self.current_composite_id,
                 "manager": self.manager,
                 "on_virtual_pins_changed": self._on_virtual_pins_changed,
-                "read_only": self.composite_logic_read_only,
+                "can_persist": self.can_persist_composite,
             }
             self.graph_editor_controller.load_graph_for_composite(
                 self.current_composite_id or "composite_graph",
@@ -530,8 +650,9 @@ class CompositeNodeManagerWidget(
                     "composite_id": self.current_composite_id,
                     "manager": self.manager,
                     "on_virtual_pins_changed": self._on_virtual_pins_changed,
-                    "read_only": self.composite_logic_read_only,
+                    "can_persist": self.can_persist_composite,
                 },
+                edit_session_capabilities=self._edit_session_capabilities,
             )
             if self.graph_view is not None:
                 self.graph_view.setScene(self.graph_scene)
@@ -625,7 +746,7 @@ class CompositeNodeManagerWidget(
             return
 
         builder = ContextMenuBuilder(self)
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             # 只读模式下不提供任何修改库结构的菜单，仅保留空菜单以占位。
             builder.exec_for(self.composite_tree.viewport(), position)
             return
@@ -641,7 +762,7 @@ class CompositeNodeManagerWidget(
 
     def _create_composite_node(self) -> None:
         """创建新的复合节点（默认自动命名，无弹窗）。"""
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             show_warning_dialog(self, "只读模式", "当前复合节点库为只读模式，不能在 UI 中新建复合节点。")
             return
         folder_path = ""
@@ -659,7 +780,7 @@ class CompositeNodeManagerWidget(
 
     def _create_folder(self) -> None:
         """创建新文件夹。"""
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             show_warning_dialog(self, "只读模式", "当前复合节点库为只读模式，不能在 UI 中新建文件夹。")
             return
 
@@ -682,7 +803,7 @@ class CompositeNodeManagerWidget(
 
     def _delete_item(self) -> None:
         """删除选中的项（节点或文件夹）。"""
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             show_warning_dialog(self, "只读模式", "当前复合节点库为只读模式，不能在 UI 中删除复合节点或文件夹。")
             return
 
@@ -708,7 +829,7 @@ class CompositeNodeManagerWidget(
 
     def _delete_composite_node(self, composite_id: str) -> None:
         """删除指定的复合节点。"""
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             return
 
         composite_config = self.manager.get_composite_node(composite_id)
@@ -737,7 +858,7 @@ class CompositeNodeManagerWidget(
 
     def _delete_folder(self, folder_path: str) -> None:
         """删除指定的文件夹。"""
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             return
 
         if not ask_yes_no_dialog(
@@ -754,7 +875,7 @@ class CompositeNodeManagerWidget(
 
     def _move_node_to_folder(self, composite_id: str) -> None:
         """移动节点到文件夹。"""
-        if self.composite_logic_read_only:
+        if not self.can_persist_composite:
             show_warning_dialog(self, "只读模式", "当前复合节点库为只读模式，不能在 UI 中移动复合节点。")
             return
 
@@ -795,6 +916,7 @@ class CompositeNodeManagerWidget(
             description="",
         )
         self.current_composite.virtual_pins.append(new_pin)
+        self._composite_meta_dirty = True
         self.composite_selected.emit(self.current_composite_id)
 
     def remove_virtual_pin(self, pin_index: int) -> None:
@@ -805,6 +927,7 @@ class CompositeNodeManagerWidget(
         self.current_composite.virtual_pins = [
             virtual_pin for virtual_pin in self.current_composite.virtual_pins if virtual_pin.pin_index != pin_index
         ]
+        self._composite_meta_dirty = True
         self.composite_selected.emit(self.current_composite_id)
 
     def update_pin_from_table(self, pin_index: int, name: str, pin_type: str) -> None:
@@ -820,6 +943,7 @@ class CompositeNodeManagerWidget(
             return
         target_pin.pin_name = name
         target_pin.pin_type = pin_type
+        self._composite_meta_dirty = True
 
     def update_composite_basic_info(self, name: str, description: str) -> None:
         """更新复合节点基本信息（由属性面板调用）。"""
@@ -828,6 +952,7 @@ class CompositeNodeManagerWidget(
 
         self.current_composite.node_name = name
         self.current_composite.node_description = description
+        self._composite_meta_dirty = True
 
         if self.center_title_label is not None:
             self.center_title_label.setText(f"编辑: {name}")
@@ -842,12 +967,29 @@ class CompositeNodeManagerWidget(
         """保存当前编辑的复合节点（默认在只读模式下短路，不落盘）。"""
         if not self.current_composite or not self.current_composite_id:
             return
-        if self.composite_logic_read_only:
-            print(f"[只读] 已阻止保存复合节点 {self.current_composite.node_name}")
+        if not self.can_persist_composite:
+            print(f"[预览] 已阻止保存复合节点 {self.current_composite.node_name}")
+            return
+        if not self._has_unsaved_changes():
             return
 
         if self.graph_model is not None:
             self.current_composite.sub_graph = self.graph_model.serialize()
+
+        # 保护：若该复合节点文件不是 payload 格式，保存会覆盖原有源码结构（转换为 payload 以保证可解析/可校验）。
+        if not self._is_payload_backed_file(self.current_composite_id):
+            if not ask_yes_no_dialog(
+                self,
+                "确认覆盖源码",
+                (
+                    "该复合节点当前不是“可视化落盘（payload）格式”。\n"
+                    "继续保存将覆盖原有 Python 源码结构，并转换为 payload 格式，"
+                    "以保证后续可被解析器加载与校验器验证。\n\n"
+                    "是否继续？"
+                ),
+            ):
+                print(f"[取消] 用户取消保存复合节点: {self.current_composite.node_name}")
+                return
 
         impact = self._service.analyze_update_impact(self.current_composite_id, self.current_composite)
         if impact.get("has_impact", False):
@@ -860,6 +1002,44 @@ class CompositeNodeManagerWidget(
             self.current_composite,
             skip_impact_check=True,
         )
+        self._composite_meta_dirty = False
+        if self.graph_editor_controller is not None:
+            self.graph_editor_controller.mark_as_saved()
+
+    def _is_payload_backed_file(self, composite_id: str) -> bool:
+        """判断复合节点文件是否为 payload 落盘格式。"""
+        file_path = getattr(self.manager, "composite_index", {}).get(composite_id)
+        if file_path is None:
+            return False
+        if not file_path.exists():
+            return False
+        with open(file_path, "r", encoding="utf-8") as file:
+            code = file.read()
+        return "COMPOSITE_PAYLOAD_JSON" in code
+
+    def _on_persist_toggled(self, checked: bool) -> None:
+        """顶部“允许保存”开关回调。"""
+        capabilities = EditSessionCapabilities.full_editing() if checked else EditSessionCapabilities.interactive_preview()
+        self._set_edit_session_capabilities(capabilities)
+        # 切换能力后：若当前已加载子图，重载一次以把 can_persist 写入 composite_edit_context。
+        if self.current_composite is not None:
+            self._load_composite_to_ui(self.current_composite)
+
+    def _apply_persist_controls_state(self) -> None:
+        """根据 can_persist 统一更新写入相关控件的启用/提示。"""
+        is_enabled = bool(self.can_persist_composite)
+        if self._add_node_button is not None:
+            self._add_node_button.setEnabled(is_enabled)
+            self._add_node_button.setToolTip("" if is_enabled else "预览模式：禁止在 UI 中新建复合节点。")
+        if self._add_folder_button is not None:
+            self._add_folder_button.setEnabled(is_enabled)
+            self._add_folder_button.setToolTip("" if is_enabled else "预览模式：禁止在 UI 中新建文件夹。")
+        if self._delete_button is not None:
+            self._delete_button.setEnabled(is_enabled)
+            self._delete_button.setToolTip("" if is_enabled else "预览模式：禁止在 UI 中删除复合节点或文件夹。")
+        if self.save_button is not None:
+            self.save_button.setEnabled(is_enabled)
+            self.save_button.setToolTip("" if is_enabled else "预览模式：不允许保存复合节点到文件。")
 
     def _show_impact_confirmation_dialog(self, impact: dict) -> bool:
         """显示复合节点更新影响的确认对话框。"""

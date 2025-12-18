@@ -135,6 +135,15 @@ class BaseManagementSection:
         _ = (parent, package, item_id, on_changed)
         return None
 
+    def set_usage_text(self, usage_text: str) -> None:
+        """可选：设置“被引用/使用情况”等辅助文本（默认无行为）。
+
+        说明：
+        - 该接口用于消除上层对具体 Section 的反射式调用（hasattr/getattr）。
+        - 只有少数 Section（例如关卡变量分组）需要在列表选择时动态回填“被哪些存档引用”。
+        """
+        _ = usage_text
+
     @staticmethod
     def _get_last_modified_text(payload: Dict[str, Any]) -> str:
         raw_value = payload.get("last_modified")

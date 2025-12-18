@@ -28,6 +28,11 @@ CANVAS_SAFE_POINT_NEAR_STEP: int = 8
 CANVAS_RECT_SAMPLE_STEPS_X: int = 4
 CANVAS_RECT_SAMPLE_STEPS_Y: int = 4
 
+# 节点避让外扩（像素）。
+# 目的：右键拖拽/右键点击等动作若从节点或其边缘发起，可能会导致“拖拽不生效/拖动节点/误触端口”等。
+# 默认将节点 bbox 向外扩一圈，尽量保证交互从稳定的画布背景区域发起。
+CANVAS_NODE_AVOID_PADDING_PX: int = 14
+
 
 def _is_point_inside_bbox(
     point_x: int,
@@ -50,6 +55,30 @@ def _is_point_inside_bbox(
     if int(point_y) < top or int(point_y) >= bottom:
         return False
     return True
+
+
+def _pad_bbox_for_avoidance(
+    bbox_x: int,
+    bbox_y: int,
+    bbox_w: int,
+    bbox_h: int,
+    padding: int,
+    bounds_w: int,
+    bounds_h: int,
+) -> Tuple[int, int, int, int]:
+    """将 bbox 按 padding 向外扩展，并裁剪到图像边界内。"""
+    pad = int(padding)
+    if pad <= 0:
+        return int(bbox_x), int(bbox_y), int(bbox_w), int(bbox_h)
+    left = max(0, int(bbox_x) - pad)
+    top = max(0, int(bbox_y) - pad)
+    right = min(int(bounds_w), int(bbox_x) + int(bbox_w) + pad)
+    bottom = min(int(bounds_h), int(bbox_y) + int(bbox_h) + pad)
+    new_w = int(right - left)
+    new_h = int(bottom - top)
+    if new_w <= 0 or new_h <= 0:
+        return int(bbox_x), int(bbox_y), int(bbox_w), int(bbox_h)
+    return int(left), int(top), int(new_w), int(new_h)
 
 
 def _clamp_point_to_region(
@@ -273,7 +302,31 @@ def snap_screen_point_to_canvas_background(
                 skipped_super_large_count += 1
                 continue
         node_bboxes_for_avoidance.append((bbox_x_i, bbox_y_i, bbox_w_i, bbox_h_i))
+
+    avoid_padding_px = int(getattr(executor, "canvas_node_avoid_padding_px", CANVAS_NODE_AVOID_PADDING_PX))
+    if avoid_padding_px < 0:
+        avoid_padding_px = 0
+
     node_bboxes = node_bboxes_for_avoidance
+    if node_bboxes and avoid_padding_px > 0:
+        padded_bboxes: list[Tuple[int, int, int, int]] = []
+        for bbox_x_i, bbox_y_i, bbox_w_i, bbox_h_i in node_bboxes_for_avoidance:
+            padded_bboxes.append(
+                _pad_bbox_for_avoidance(
+                    int(bbox_x_i),
+                    int(bbox_y_i),
+                    int(bbox_w_i),
+                    int(bbox_h_i),
+                    int(avoid_padding_px),
+                    int(img_w),
+                    int(img_h),
+                )
+            )
+        node_bboxes = padded_bboxes
+        executor.log(
+            f"[颜色约束] 节点避让外扩: padding={int(avoid_padding_px)}px（节点周围一圈禁入）",
+            log_callback,
+        )
     if node_bboxes:
         executor.log(
             f"[颜色约束] 节点识别：当前画布内检测到 {int(len(node_bboxes))} 个节点框(参与避让)，将尽量避开这些区域",
@@ -359,12 +412,13 @@ def snap_screen_point_to_canvas_background(
             "label": "预选起点(原始)",
         }
     )
+    node_rect_label = "已存在节点(避让)" if int(avoid_padding_px) > 0 else "已存在节点"
     for bbox_x, bbox_y, bbox_w, bbox_h in node_bboxes:
         overlay_rects.append(
             {
                 "bbox": (int(bbox_x), int(bbox_y), int(bbox_w), int(bbox_h)),
                 "color": (200, 140, 255),
-                "label": "已存在节点",
+                "label": str(node_rect_label),
             }
         )
 

@@ -29,6 +29,8 @@ from app.ui.graph.library_pages.library_scaffold import (
     LibraryPageMixin,
     LibrarySelection,
 )
+from app.ui.graph.library_pages.library_view_scope import describe_resource_view_scope
+from app.ui.graph.library_pages.standard_dual_pane_list_page import StandardDualPaneListPage
 
 INSTANCE_ID_ROLE = QtCore.Qt.ItemDataRole.UserRole
 ENTITY_TYPE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -40,7 +42,7 @@ LEVEL_ENTITY_LABEL_TEXT = "关卡实体"
 
 
 class EntityPlacementWidget(
-    DualPaneLibraryScaffold,
+    StandardDualPaneListPage,
     LibraryPageMixin,
     SearchFilterMixin,
     ToolbarMixin,
@@ -49,8 +51,8 @@ class EntityPlacementWidget(
 ):
     """实体摆放界面 - 文件列表形式"""
 
-    instance_selected = QtCore.pyqtSignal(str)  # instance_id
-    level_entity_selected = QtCore.pyqtSignal()  # 关卡实体被选中
+    # 统一库页选中事件：发射 LibrarySelection（或 None 表示无有效选中）。
+    selection_changed = QtCore.pyqtSignal(object)
     # 当实例被新增/删除/位置修改等造成持久化状态改变时发射，用于通知上层立即保存存档索引
     data_changed = QtCore.pyqtSignal(LibraryChangeEvent)
     
@@ -70,50 +72,22 @@ class EntityPlacementWidget(
     
     def _setup_ui(self) -> None:
         """设置UI"""
-        # 顶部：标题右侧放搜索框，作为实体全局过滤入口
-        self.search_edit = QtWidgets.QLineEdit(self)
-        self.search_edit.setPlaceholderText("搜索实体...")
-        self.search_edit.setMinimumHeight(Sizes.INPUT_HEIGHT)
-        self.add_action_widget(self.search_edit)
-
-        # 标题下方：仅保留“添加/删除”等主操作按钮
-        toolbar_container = QtWidgets.QWidget()
-        top_toolbar = QtWidgets.QHBoxLayout(toolbar_container)
-        top_toolbar.setContentsMargins(0, 0, 0, 0)
-        self.init_toolbar(top_toolbar)
         self.add_instance_btn = QtWidgets.QPushButton("+ 添加实体", self)
         self.delete_instance_btn = QtWidgets.QPushButton("删除", self)
-        toolbar_buttons = [
-            self.add_instance_btn,
-            self.delete_instance_btn,
-        ]
-        # 工具栏行只放操作按钮，搜索栏统一放在标题行右侧
-        self.setup_toolbar_with_search(top_toolbar, toolbar_buttons, None)
-        self.set_status_widget(toolbar_container)
-
-        self.category_tree = QtWidgets.QTreeWidget()
-        self.category_tree.setHeaderLabel("实体分类")
-        self.category_tree.setObjectName("leftPanel")
-        self.category_tree.setFixedWidth(Sizes.LEFT_PANEL_WIDTH)
-
-        right_widget = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 右侧：使用列表视图展示实体，风格与元件库保持一致
-        self.entity_list = QtWidgets.QListWidget()
-        self.entity_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.entity_list.setObjectName("entityInstanceList")
-        right_layout.addWidget(self.entity_list)
-
-        self.build_dual_pane(
-            self.category_tree,
-            right_widget,
+        widgets = self.build_standard_dual_pane_list_ui(
+            search_placeholder="搜索实体...",
+            toolbar_buttons=[self.add_instance_btn, self.delete_instance_btn],
+            left_header_label="实体分类",
             left_title="实体分类",
             left_description="按实体类型过滤实体",
             right_title="实体列表",
             right_description="支持搜索与筛选，选中后在右侧属性面板中编辑详细属性",
+            list_object_name="entityInstanceList",
+            wrap_right_list=True,
         )
+        self.search_edit = widgets.search_edit
+        self.category_tree = widgets.category_tree
+        self.entity_list = widgets.list_widget
         
         # 初始化分类树
         self._init_category_tree()
@@ -167,13 +141,6 @@ class EntityPlacementWidget(
 
         self._rebuild_instances()
 
-    def set_package(
-        self,
-        package: Union[PackageView, GlobalResourceView, UnclassifiedResourceView],
-    ) -> None:
-        """兼容旧接口，内部委托给 set_context。"""
-        self.set_context(package)
-
     def reload(self) -> None:
         """在当前上下文下全量刷新实体列表并负责选中恢复。"""
         self._rebuild_instances()
@@ -192,7 +159,7 @@ class EntityPlacementWidget(
                 return LibrarySelection(
                     kind="level_entity",
                     id=value,
-                    context={"scope": self._describe_current_scope()},
+                    context={"scope": describe_resource_view_scope(self.current_package)},
                 )
             return None
 
@@ -200,7 +167,7 @@ class EntityPlacementWidget(
         return LibrarySelection(
             kind=kind,
             id=instance_id,
-            context={"scope": self._describe_current_scope()},
+            context={"scope": describe_resource_view_scope(self.current_package)},
         )
 
     def set_selection(self, selection: Optional[LibrarySelection]) -> None:
@@ -220,7 +187,7 @@ class EntityPlacementWidget(
                 # 无具体 ID 时默认选中关卡实体视图中的唯一条目
                 if self.entity_list.count() > 0:
                     self.entity_list.setCurrentRow(0)
-                    self.level_entity_selected.emit()
+                    self._emit_current_selection_or_clear()
             return
 
         if selection.kind != "instance":
@@ -237,7 +204,7 @@ class EntityPlacementWidget(
             # 特殊处理：关卡实体
             self.current_category = "level_entity"
             self._rebuild_instances()
-            self.level_entity_selected.emit()
+            self._emit_current_selection_or_clear()
             return
 
         self.current_category = category or "all"
@@ -246,15 +213,14 @@ class EntityPlacementWidget(
     def _rebuild_instances(self) -> None:
         """刷新实体列表"""
         previously_selected_id = self._current_instance_id()
-
-        self.entity_list.clear()
-
         if not self.current_package:
+            self.entity_list.clear()
             return
 
         effective_category = self.current_category or "all"
 
         if effective_category == "level_entity":
+            self.entity_list.clear()
             self._rebuild_level_entity_view(previously_selected_id)
             return
 
@@ -352,17 +318,12 @@ class EntityPlacementWidget(
         def emit_for_instance(instance_id: Any) -> None:
             if not isinstance(instance_id, str) or not instance_id:
                 return
-            if self._is_level_entity_instance_id(instance_id):
-                self.level_entity_selected.emit()
-            else:
-                self.instance_selected.emit(instance_id)
+            self._emit_current_selection_or_clear()
 
         def emit_empty_selection() -> None:
-            if not self.current_package:
-                return
             if previously_selected_id:
                 self.notify_selection_state(False, context={"source": "instance"})
-                self.instance_selected.emit("")
+                self.selection_changed.emit(None)
 
         rebuild_list_with_preserved_selection(
             self.entity_list,
@@ -375,16 +336,6 @@ class EntityPlacementWidget(
             on_cleared_selection=emit_empty_selection,
         )
 
-    def _describe_current_scope(self) -> str:
-        """根据当前资源视图返回简单 scope 标识，用于变更事件上下文。"""
-        if isinstance(self.current_package, PackageView):
-            return "package"
-        if isinstance(self.current_package, GlobalResourceView):
-            return "global"
-        if isinstance(self.current_package, UnclassifiedResourceView):
-            return "unclassified"
-        return "unknown"
-
     def _on_search_text_changed(self, text: str) -> None:
         """搜索框文本变化"""
         def _get_search_text(item: QtWidgets.QListWidgetItem) -> str:
@@ -394,15 +345,17 @@ class EntityPlacementWidget(
         self.filter_list_items(self.entity_list, text, text_getter=_get_search_text)
 
     def _on_selection_changed(self) -> None:
-        instance_id = self._current_instance_id()
-        if not instance_id:
+        self._emit_current_selection_or_clear()
+
+    def _emit_current_selection_or_clear(self) -> None:
+        """根据当前 QListWidget 选中项发射统一的 selection_changed 事件。"""
+        selection = self.get_selection()
+        if selection is None:
+            self.notify_selection_state(False, context={"source": "instance"})
+            self.selection_changed.emit(None)
             return
-        # 关卡实体在任意分类下都应通过专用信号驱动右侧面板，
-        # 避免被当作普通实体实例处理。
-        if self._is_level_entity_instance_id(instance_id):
-            self.level_entity_selected.emit()
-            return
-        self.instance_selected.emit(instance_id)
+        self.notify_selection_state(True, context={"source": "instance"})
+        self.selection_changed.emit(selection)
 
     def _current_instance_id(self) -> Optional[str]:
         """获取当前选中的实体 ID。"""
@@ -552,13 +505,13 @@ class EntityPlacementWidget(
         if self.current_category == "level_entity":
             self._ensure_level_entity_exists()
             self._rebuild_instances()
-            self.level_entity_selected.emit()
+            self._emit_current_selection_or_clear()
             # 通知上层：关卡实体已创建或绑定（需立即保存索引/资源）
             event = LibraryChangeEvent(
                 kind="level_entity",
                 id="",
                 operation="update",
-                context={"scope": self._describe_current_scope(), "action": "ensure_level_entity"},
+                context={"scope": describe_resource_view_scope(self.current_package), "action": "ensure_level_entity"},
             )
             self.data_changed.emit(event)
             return
@@ -581,7 +534,7 @@ class EntityPlacementWidget(
                 kind="instance",
                 id=instance.instance_id,
                 operation="create",
-                context={"scope": self._describe_current_scope()},
+                context={"scope": describe_resource_view_scope(self.current_package)},
             )
             self.data_changed.emit(event)
     
@@ -610,7 +563,7 @@ class EntityPlacementWidget(
                 kind="instance",
                 id=instance_id,
                 operation="delete",
-                context={"scope": self._describe_current_scope()},
+                context={"scope": describe_resource_view_scope(self.current_package)},
             )
             self.data_changed.emit(event)
             ToastNotification.show_message(self, f"已删除实体 '{instance.name}'。", "success")
@@ -624,11 +577,7 @@ class EntityPlacementWidget(
                 self.entity_list.scrollToItem(
                     item, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter
                 )
-                # 关卡实体通过专用信号驱动右侧属性面板。
-                if self.current_category == "level_entity":
-                    self.level_entity_selected.emit()
-                else:
-                    self.instance_selected.emit(instance_id)
+                self._emit_current_selection_or_clear()
                 break
 
     # 对外刷新入口 -------------------------------------------------------------
@@ -649,7 +598,7 @@ class EntityPlacementWidget(
 
         # 无论之前是否选中，关卡实体视图下始终选中唯一条目并触发专用信号。
         self.entity_list.setCurrentRow(0)
-        self.level_entity_selected.emit()
+        self._emit_current_selection_or_clear()
 
     def _append_level_entity_in_all_category(self, displayed_instance_ids: set[str]) -> None:
         """在“全部实体”分类下，将关卡实体本体追加到列表中（若存在且尚未显示）。"""

@@ -33,8 +33,9 @@ class UIWidgetPreviewItem(QtWidgets.QGraphicsItem):
         self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
 
-        # 缓存边界
-        self.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
+        # 该预览项会频繁移动/缩放且边界会随“选中态”变化（显示手柄/外扩 margin）。
+        # DeviceCoordinateCache 在此类交互场景下容易与局部重绘结合产生残影，因此禁用缓存以保证重绘正确。
+        self.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.NoCache)
 
     def boundingRect(self) -> QtCore.QRectF:  # type: ignore[override]
         """边界矩形"""
@@ -123,6 +124,11 @@ class UIWidgetPreviewItem(QtWidgets.QGraphicsItem):
 
     def update_config(self, config: dict) -> None:
         """更新配置"""
+        previous_size = self.config.get("size") if isinstance(self.config, dict) else None
+        next_size = config.get("size") if isinstance(config, dict) else None
+        if previous_size != next_size:
+            # boundingRect 依赖 size，变更前必须通知场景更新索引。
+            self.prepareGeometryChange()
         self.config = config
         self.setPos(config["position"][0], config["position"][1])
         self.setZValue(config.get("layer_index", 0))
@@ -130,6 +136,10 @@ class UIWidgetPreviewItem(QtWidgets.QGraphicsItem):
 
     def set_selected(self, selected: bool) -> None:
         """设置选中状态"""
+        if selected == self.is_selected:
+            return
+        # boundingRect 依赖 is_selected（用于为手柄/描边预留 margin），切换前必须通知场景更新索引。
+        self.prepareGeometryChange()
         self.is_selected = selected
         self.update()
 
@@ -222,44 +232,53 @@ class UIWidgetPreviewItem(QtWidgets.QGraphicsItem):
         if not self.resize_handle:
             return
 
-        width = self.config["size"][0]
-        height = self.config["size"][1]
+        current_width = float(self.config["size"][0])
+        current_height = float(self.config["size"][1])
         item_pos = self.pos()
 
         # 最小尺寸
-        min_size = 20
+        min_size = 20.0
 
-        x, y = pos.x(), pos.y()
+        x, y = float(pos.x()), float(pos.y())
+        next_width = current_width
+        next_height = current_height
+        next_item_x = float(item_pos.x())
+        next_item_y = float(item_pos.y())
 
-        # 根据不同的手柄调整大小
+        # 根据不同的手柄调整大小（先计算，再一次性应用；避免边界变更未提前通知导致残影）
         if "l" in self.resize_handle:
-            # 左侧调整
-            new_width = width - x
-            if new_width >= min_size:
-                self.config["size"] = (new_width, self.config["size"][1])
-                self.setPos(item_pos.x() + x, item_pos.y())
+            candidate_width = current_width - x
+            if candidate_width >= min_size:
+                next_width = candidate_width
+                next_item_x = float(item_pos.x()) + x
 
         if "r" in self.resize_handle:
-            # 右侧调整
-            new_width = x
-            if new_width >= min_size:
-                self.config["size"] = (new_width, self.config["size"][1])
+            candidate_width = x
+            if candidate_width >= min_size:
+                next_width = candidate_width
 
         if "t" in self.resize_handle:
-            # 顶部调整
-            new_height = height - y
-            if new_height >= min_size:
-                self.config["size"] = (self.config["size"][0], new_height)
-                self.setPos(item_pos.x(), item_pos.y() + y)
+            candidate_height = current_height - y
+            if candidate_height >= min_size:
+                next_height = candidate_height
+                next_item_y = float(item_pos.y()) + y
 
         if "b" in self.resize_handle:
-            # 底部调整
-            new_height = y
-            if new_height >= min_size:
-                self.config["size"] = (self.config["size"][0], new_height)
+            candidate_height = y
+            if candidate_height >= min_size:
+                next_height = candidate_height
 
-        # 更新边界和重绘
+        if (
+            next_width == current_width
+            and next_height == current_height
+            and next_item_x == float(item_pos.x())
+            and next_item_y == float(item_pos.y())
+        ):
+            return
+
         self.prepareGeometryChange()
+        self.config["size"] = (next_width, next_height)
+        self.setPos(next_item_x, next_item_y)
         self.update()
 
     def hoverMoveEvent(self, event: QtWidgets.QGraphicsSceneHoverEvent) -> None:  # type: ignore[override]

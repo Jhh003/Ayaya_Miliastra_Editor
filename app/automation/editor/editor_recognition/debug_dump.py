@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from engine.graph.models.graph_model import GraphModel
-from engine.utils.cache.cache_paths import get_runtime_cache_root
+from app.runtime.services import get_shared_json_cache_service
 
 
 def _dump_last_focus_detection_snapshot(
@@ -29,8 +29,6 @@ def _dump_last_focus_detection_snapshot(
     if workspace_path_value is None:
         return
     workspace_root = Path(workspace_path_value)
-    output_dir = get_runtime_cache_root(workspace_root) / "debug"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     graph_id_value = getattr(graph_model, "graph_id", None)
     graph_id_text = str(graph_id_value) if graph_id_value is not None else ""
@@ -62,10 +60,13 @@ def _dump_last_focus_detection_snapshot(
         "detections": detections_payload,
     }
 
-    output_path = output_dir / "last_focus_detection.json"
-    with output_path.open("w", encoding="utf-8") as f:
-        import json
-
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    cache_service = get_shared_json_cache_service(workspace_root)
+    cache_service.save_json(
+        "debug/last_focus_detection.json",
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
 
 

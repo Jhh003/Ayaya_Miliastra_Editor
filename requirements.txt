@@ -1,0 +1,15 @@
+# 安装方式（Windows / PowerShell）：
+#   pip install -r requirements.txt -c constraints.txt
+#
+# 说明：
+# - requirements.txt 仅列出“直接依赖”（项目代码显式 import/使用的库）
+# - 具体可复现版本由 constraints.txt 锁定（避免新机器/新环境出现版本漂移）
+PyQt6
+rapidocr-onnxruntime
+numpy
+opencv-python
+Pillow
+pyperclip
+keyboard
+
+

@@ -187,7 +187,12 @@ def cleanup_virtual_pins_for_deleted_node(
 
     composite_id = context["composite_id"]
     manager = context["manager"]
-    is_read_only_context = bool(context.get("read_only"))
+    if "can_persist" in context:
+        can_persist_context = bool(context.get("can_persist"))
+    else:
+        # 兼容旧字段：read_only=True 表示“逻辑只读（不落盘）”
+        can_persist_context = not bool(context.get("read_only"))
+    is_logic_read_only_context = not can_persist_context
 
     has_changes, affected_node_ids, removed_pins = manager.virtual_pin_manager.cleanup_mappings_for_deleted_node(
         composite_id,
@@ -197,7 +202,7 @@ def cleanup_virtual_pins_for_deleted_node(
         return False, set()
 
     composite = manager.get_composite_node(composite_id)
-    if composite is not None and not is_read_only_context:
+    if composite is not None and not is_logic_read_only_context:
         # 非只读：同步写回函数文件
         manager.update_composite_node(composite_id, composite)
         log_info(

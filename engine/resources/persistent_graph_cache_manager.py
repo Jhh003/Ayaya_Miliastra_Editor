@@ -73,6 +73,7 @@ class PersistentGraphCacheManager:
             return None
         if not self._is_result_data_structurally_consistent(result_data):
             log_warn("[缓存][图] 持久化缓存结构不自洽，视为失效：{}", graph_id)
+            cache_file.unlink()
             return None
         return result_data
 
@@ -116,6 +117,8 @@ class PersistentGraphCacheManager:
             "cached_at": datetime.now().isoformat(),
         }
         # 原子写入：先写临时文件，再替换目标文件，避免中断导致空文件/半写入 JSON。
+        # 额外兜底：在外部工具/并发清缓存的情况下，目录可能在 mkdir 后被删除；写入前再次确保父目录存在。
+        tmp_file.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp_file, "w", encoding="utf-8") as file_obj:
             json.dump(payload, file_obj, ensure_ascii=False, indent=2)
         tmp_file.replace(cache_file)

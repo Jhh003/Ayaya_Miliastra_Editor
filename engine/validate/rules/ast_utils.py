@@ -9,7 +9,10 @@ if TYPE_CHECKING:
     from ..context import ValidationContext
 
 from ..issue import EngineIssue
-from engine.graph.utils.metadata_extractor import extract_graph_variables_from_ast
+from engine.graph.utils.metadata_extractor import (
+    extract_graph_variables_from_ast,
+    extract_metadata_from_docstring,
+)
 
 
 @lru_cache(maxsize=256)
@@ -74,6 +77,35 @@ def extract_declared_graph_vars_from_code(tree: ast.Module) -> Set[str]:
 def extract_declared_graph_vars(tree: ast.Module, source_text: str) -> Set[str]:
     """返回通过 GRAPH_VARIABLES 声明的图变量名集合。"""
     return extract_declared_graph_vars_from_code(tree)
+
+
+def infer_graph_scope(ctx: "ValidationContext") -> str:
+    """推断当前节点图文件的作用域（server/client）。
+
+    说明：
+    - 校验规则需要按作用域读取节点库（同名节点在不同作用域可能存在不同端口定义）；
+    - 优先根据文件路径快速推断，其次回退到 docstring 的 `graph_type/scope` 字段；
+    - 无法识别时默认 server（与引擎默认一致）。
+    """
+    if ctx.file_path is None:
+        return "server"
+
+    # 1) 路径快速推断（最稳定且无需依赖 docstring 格式）
+    normalized_path = ctx.file_path.as_posix().lower()
+    if "/assets/资源库/节点图/client/" in normalized_path:
+        return "client"
+    if "/assets/资源库/节点图/server/" in normalized_path:
+        return "server"
+
+    # 2) docstring 回退：graph_type / scope
+    tree = get_cached_module(ctx)
+    docstring = ast.get_docstring(tree) or ""
+    meta = extract_metadata_from_docstring(docstring)
+    scope_text = str(meta.graph_type or meta.scope or "").strip().lower()
+    if scope_text in {"server", "client"}:
+        return scope_text
+
+    return "server"
 
 
 def iter_class_methods(tree: ast.Module) -> Iterator[Tuple[ast.ClassDef, ast.FunctionDef]]:

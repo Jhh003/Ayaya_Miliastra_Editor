@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from engine.utils.logging.logger import log_info
+
 
 class MembershipMixin:
     """集中处理多种资源的归属集合计算与写回。"""
@@ -11,9 +13,7 @@ class MembershipMixin:
     def _build_signal_membership_index(self) -> Dict[str, set[str]]:
         """扫描所有存档索引，构建 {signal_id: {package_id,...}} 归属索引。"""
         membership: Dict[str, set[str]] = {}
-        manager = getattr(self, "package_index_manager", None)
-        if manager is None:
-            return membership
+        manager = self.app_state.package_index_manager
         packages = manager.list_packages()
         for pkg in packages:
             package_id_value = pkg.get("package_id")
@@ -36,9 +36,7 @@ class MembershipMixin:
     def _build_struct_membership_index(self) -> Dict[str, set[str]]:
         """扫描所有存档索引，构建 {struct_id: {package_id,...}} 归属索引。"""
         membership: Dict[str, set[str]] = {}
-        manager = getattr(self, "package_index_manager", None)
-        if manager is None:
-            return membership
+        manager = self.app_state.package_index_manager
         packages = manager.list_packages()
         for pkg in packages:
             package_id_value = pkg.get("package_id")
@@ -73,8 +71,8 @@ class MembershipMixin:
             sync_package_signals_to_index_and_aggregate,
         )
 
-        manager = getattr(self, "package_index_manager", None)
-        resource_manager = getattr(self, "resource_manager", None)
+        manager = self.app_state.package_index_manager
+        resource_manager = self.app_state.resource_manager
         if not isinstance(manager, PackageIndexManager) or not isinstance(resource_manager, ResourceManager):
             return
 
@@ -137,8 +135,8 @@ class MembershipMixin:
         from engine.resources.package_index_manager import PackageIndexManager
         from engine.resources.resource_manager import ResourceManager
 
-        manager = getattr(self, "package_index_manager", None)
-        resource_manager = getattr(self, "resource_manager", None)
+        manager = self.app_state.package_index_manager
+        resource_manager = self.app_state.resource_manager
         if not isinstance(manager, PackageIndexManager) or not isinstance(resource_manager, ResourceManager):
             return
 
@@ -180,9 +178,11 @@ class MembershipMixin:
         is_checked: bool,
     ) -> None:
         """右侧信号面板中“所属存档”勾选变化时更新归属。"""
-        print(
-            f"[SIGNAL-MEMBERSHIP] changed: signal_id={signal_id!r}, "
-            f"package_id={package_id!r}, is_checked={is_checked!r}"
+        log_info(
+            "[SIGNAL-MEMBERSHIP] changed: signal_id={} package_id={} is_checked={}",
+            signal_id,
+            package_id,
+            is_checked,
         )
         if not signal_id or not package_id:
             return
@@ -290,9 +290,11 @@ class MembershipMixin:
         is_checked: bool,
     ) -> None:
         """右侧结构体面板中“所属存档”勾选变化时更新归属。"""
-        print(
-            f"[STRUCT-MEMBERSHIP] changed: struct_id={struct_id!r}, "
-            f"package_id={package_id!r}, is_checked={is_checked!r}"
+        log_info(
+            "[STRUCT-MEMBERSHIP] changed: struct_id={} package_id={} is_checked={}",
+            struct_id,
+            package_id,
+            is_checked,
         )
         if not struct_id or not package_id:
             return
@@ -318,9 +320,7 @@ class MembershipMixin:
         resource_id: str,
     ) -> tuple[list[dict], set[str]]:
         """返回给定管理资源在各存档中的归属集合以及完整包列表。"""
-        manager = getattr(self, "package_index_manager", None)
-        if manager is None:
-            return [], set()
+        manager = self.app_state.package_index_manager
         packages = manager.list_packages()
         membership: set[str] = set()
         for package_info in packages:
@@ -360,9 +360,7 @@ class MembershipMixin:
         self,
         source_key: str,
     ) -> tuple[list[dict], set[str], list[str]]:
-        manager = getattr(self, "package_index_manager", None)
-        if manager is None:
-            return [], set(), []
+        manager = self.app_state.package_index_manager
         variable_ids = self._get_level_variable_ids_for_source(source_key)
         packages = manager.list_packages()
         membership: set[str] = set()
@@ -389,7 +387,7 @@ class MembershipMixin:
     ) -> None:
         from engine.resources.package_index_manager import PackageIndexManager
 
-        manager = getattr(self, "package_index_manager", None)
+        manager = self.app_state.package_index_manager
         if not isinstance(manager, PackageIndexManager):
             return
 
@@ -422,7 +420,7 @@ class MembershipMixin:
         """同步通用管理资源与各存档之间的归属关系。"""
         from engine.resources.package_index_manager import PackageIndexManager
 
-        manager = getattr(self, "package_index_manager", None)
+        manager = self.app_state.package_index_manager
         if not isinstance(manager, PackageIndexManager):
             return
 
@@ -452,9 +450,11 @@ class MembershipMixin:
         is_checked: bool,
     ) -> None:
         """主镜头编辑面板中“所属存档”勾选变化时更新归属。"""
-        print(
-            f"[CAMERA-MEMBERSHIP] changed: camera_id={camera_id!r}, "
-            f"package_id={package_id!r}, is_checked={is_checked!r}"
+        log_info(
+            "[CAMERA-MEMBERSHIP] changed: camera_id={} package_id={} is_checked={}",
+            camera_id,
+            package_id,
+            is_checked,
         )
         if not camera_id or not package_id:
             return
@@ -567,10 +567,12 @@ class MembershipMixin:
         is_checked: bool,
     ) -> None:
         """通用管理属性面板中“所属存档”勾选变化时更新归属。"""
-        print(
-            f"[MGMT-MEMBERSHIP] changed: resource_key={resource_key!r}, "
-            f"resource_id={resource_id!r}, package_id={package_id!r}, "
-            f"is_checked={is_checked!r}"
+        log_info(
+            "[MGMT-MEMBERSHIP] changed: resource_key={} resource_id={} package_id={} is_checked={}",
+            resource_key,
+            resource_id,
+            package_id,
+            is_checked,
         )
         if not resource_key or not resource_id or not package_id:
             return

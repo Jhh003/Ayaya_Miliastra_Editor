@@ -30,58 +30,46 @@ class ManagementPanelsMixin:
     def _get_current_management_package(self) -> object | None:
         return self._get_management_panels_coordinator().get_current_management_package(self)
 
-    def _update_signal_property_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_signal_property_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_signal_property_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
-    def _update_struct_property_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_struct_property_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_struct_property_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
-    def _update_timer_property_panel_for_selection(self, has_selection: bool) -> None:
-        self._get_management_panels_coordinator().update_timer_property_panel_for_selection(
-            self,
-            has_selection,
-        )
-
-    def _update_save_points_property_panel_for_selection(self, has_selection: bool) -> None:
-        self._get_management_panels_coordinator().update_save_points_property_panel_for_selection(
-            self,
-            has_selection,
-        )
-
-    def _update_main_camera_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_main_camera_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_main_camera_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
-    def _update_peripheral_system_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_peripheral_system_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_peripheral_system_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
-    def _update_equipment_entry_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_equipment_entry_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_equipment_entry_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
-    def _update_equipment_tag_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_equipment_tag_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_equipment_tag_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
-    def _update_equipment_type_panel_for_selection(self, has_selection: bool) -> None:
+    def _update_equipment_type_panel_for_selection(self, selection: tuple[str, str] | None) -> None:
         self._get_management_panels_coordinator().update_equipment_type_panel_for_selection(
             self,
-            has_selection,
+            selection,
         )
 
     def _resolve_management_resource_binding_for_section(self, section_key: str):

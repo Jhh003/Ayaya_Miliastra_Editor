@@ -8,6 +8,7 @@ from app.ui.foundation.base_widgets import BaseDialog
 from app.ui.foundation.theme_manager import ThemeManager, Colors, Sizes
 from engine.configs.settings import settings
 from app.ui.graph.library_mixins import ConfirmDialogMixin
+from app.runtime.services.graph_data_service import get_shared_graph_data_service
 
 
 class SettingsDialog(BaseDialog, ConfirmDialogMixin):
@@ -590,7 +591,14 @@ class SettingsDialog(BaseDialog, ConfirmDialogMixin):
         ):
             return
         parent = self.parent()
-        resource_manager = getattr(parent, "resource_manager", None)
+
+        app_state = getattr(parent, "app_state", None) if parent is not None else None
+        resource_manager = (
+            getattr(app_state, "resource_manager", None) if app_state is not None else getattr(parent, "resource_manager", None)
+        )
+        package_index_manager = (
+            getattr(app_state, "package_index_manager", None) if app_state is not None else getattr(parent, "package_index_manager", None)
+        )
         if resource_manager is None:
             self.show_warning("无法执行", "未找到资源管理器实例，清除缓存失败。")
             return
@@ -604,6 +612,10 @@ class SettingsDialog(BaseDialog, ConfirmDialogMixin):
         )
         result = resource_manager.clear_all_caches()
         removed = int(result.get("removed_persistent_files", 0))
+        payload_provider = get_shared_graph_data_service(resource_manager, package_index_manager)
+        removed_payload_items = int(payload_provider.clear_all_payload_graph_data())
+        payload_provider.invalidate_graph()
+        payload_provider.invalidate_package_cache()
         if had_active_graph:
             self._reset_graph_editor_after_cache_clear(
                 parent,
@@ -617,7 +629,7 @@ class SettingsDialog(BaseDialog, ConfirmDialogMixin):
             extra = "\n\n当前打开的节点图已关闭，您已回到节点图列表。请重新打开目标节点图以继续编辑。"
         self.show_info(
             "完成",
-            f"已清除所有缓存。\n\n磁盘缓存删除 {removed} 个文件，内存缓存已清空。{extra}"
+            f"已清除所有缓存。\n\n磁盘缓存删除 {removed} 个文件，内存缓存已清空（graph_data: {removed_payload_items} 条）。{extra}"
         )
 
     def _reset_graph_editor_after_cache_clear(

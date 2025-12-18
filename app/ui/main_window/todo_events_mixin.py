@@ -9,6 +9,7 @@ from app.ui.graph.graph_view.top_right.controls_manager import TopRightControlsM
 from app.models.todo_generator import TodoGenerator
 from app.models import TodoItem
 from app.models.view_modes import ViewMode
+from engine.utils.logging.logger import log_info
 from app.ui.todo.current_todo_resolver import (
     CurrentTodoContext,
     build_context_from_host,
@@ -58,6 +59,15 @@ class TodoEventsMixin:
 
         self._navigate_to_mode("todo")
 
+        # 关键：进入 Todo 后立刻把共享画布挂到预览页（不等 220ms），避免“先切页再出现画布”的重开观感。
+        if hasattr(self, "todo_widget") and self.todo_widget:
+            if hasattr(self.todo_widget, "right_stack"):
+                self.todo_widget.right_stack.setCurrentIndex(1)
+            preview_panel = getattr(self.todo_widget, "preview_panel", None)
+            if preview_panel is not None and hasattr(preview_panel, "show_shared_canvas_now"):
+                preview_panel.show_shared_canvas_now()
+
+        # 立即（下一帧）定位任务上下文，避免额外的延迟导致用户感觉“又打开了一次”。
         def _jump_and_resolve() -> None:
             if not hasattr(self, "todo_widget") or not self.todo_widget:
                 return
@@ -82,7 +92,7 @@ class TodoEventsMixin:
                 )
                 self.todo_widget.focus_task_from_external(candidate.todo_id, candidate.detail_info)
 
-        QtCore.QTimer.singleShot(220, _jump_and_resolve)
+        QtCore.QTimer.singleShot(0, _jump_and_resolve)
 
     def _update_graph_editor_todo_button_visibility(self) -> None:
         """根据上下文与当前图状态，更新编辑器执行按钮的可见性和文案。"""
@@ -100,8 +110,9 @@ class TodoEventsMixin:
         button.setText(button_label)
         button.setVisible(should_show)
 
-        if hasattr(self, "view") and isinstance(self.view, QtWidgets.QWidget):
-            TopRightControlsManager.update_position(self.view)
+        graph_view = getattr(self.graph_controller, "view", None)
+        if graph_view is not None and isinstance(graph_view, QtWidgets.QWidget):
+            TopRightControlsManager.update_position(graph_view)
 
     def _ensure_todo_data_loaded(self) -> None:
         """若任务清单尚未加载，自动生成一次数据供上下文匹配使用。"""
@@ -168,22 +179,23 @@ class TodoEventsMixin:
         package = self.package_controller.current_package
         package_id = getattr(self.package_controller, "current_package_id", "")
         package_type_name = type(package).__name__ if package is not None else "None"
-        print(
-            f"[TODO-REFRESH] 开始刷新任务清单: "
-            f"package_id={package_id!r}, package_type={package_type_name}"
+        log_info(
+            "[TODO-REFRESH] start: package_id={} package_type={}",
+            package_id,
+            package_type_name,
         )
 
         if not package:
-            print("[TODO-REFRESH] 当前没有可用的存档（current_package 为空），跳过任务生成")
+            log_info("[TODO-REFRESH] skip: current_package 为空")
             return
 
         generator = TodoGenerator(
             package,
-            self.resource_manager,
-            package_index_manager=self.package_index_manager,
+            self.app_state.resource_manager,
+            package_index_manager=self.app_state.package_index_manager,
         )
         todos = generator.generate_todos()
-        print(f"[TODO-REFRESH] 任务生成完成，本次共生成 {len(todos)} 条 TodoItem")
+        log_info("[TODO-REFRESH] generated: todo_count={}", len(todos))
 
         self.todo_widget.load_todos(todos, package.todo_states)
 
@@ -251,9 +263,6 @@ class TodoEventsMixin:
             detail_info_any = getattr(todo, "detail_info", None) or {}
             setattr(todo_state, "detail_info", dict(detail_info_any) if isinstance(detail_info_any, dict) else {})
 
-        # 优先根据步骤类型控制“执行监控”标签的显示：仅在节点图相关步骤下展示
-        self._update_execution_monitor_tab_for_todo(todo)
-
         package = self.package_controller.current_package
         if not package or not hasattr(self, "property_panel"):
             return
@@ -261,6 +270,20 @@ class TodoEventsMixin:
         detail_info = todo.detail_info or {}
         detail_type = str(detail_info.get("type", ""))
         task_type = str(todo.task_type or "")
+
+        # 优先根据步骤类型控制“执行监控”标签的显示：仅在节点图相关步骤下展示。
+        # 注意：图相关步骤的 task_type 往往仍为 "template"/"instance"（表示归属对象），
+        # 若不在这里先行拦截，会导致图步骤在选中/自动执行时被误判为“模板/实例任务”，从而抢占到“属性”tab。
+        self._update_execution_monitor_tab_for_todo(todo, switch_to=True)
+
+        is_graph_related_step = (
+            detail_type == "template_graph_root"
+            or detail_type == "event_flow_root"
+            or detail_type.startswith("graph")
+            or detail_type.startswith("composite_")
+        )
+        if is_graph_related_step:
+            return
 
         is_template_task = task_type == "template" or detail_type == "template"
         is_instance_task = task_type == "instance" or detail_type == "instance"
@@ -284,13 +307,10 @@ class TodoEventsMixin:
                 self.property_panel.set_instance(package, str(instance_id))
 
         # 在任务清单模式下按需将“属性”标签插入右侧标签页
-        if hasattr(self, "_ensure_property_tab_visible"):
-            self._ensure_property_tab_visible(True)
+        self.right_panel.ensure_visible("property", visible=True, switch_to=True)
+        self.schedule_ui_session_state_save()
 
-        if hasattr(self, "_schedule_ui_session_state_save"):
-            self._schedule_ui_session_state_save()
-
-    def _update_execution_monitor_tab_for_todo(self, todo: TodoItem) -> None:
+    def _update_execution_monitor_tab_for_todo(self, todo: TodoItem, *, switch_to: bool = False) -> bool:
         """根据 Todo 步骤类型按需显示/隐藏右侧“执行监控”标签页。
 
         规则：
@@ -320,5 +340,9 @@ class TodoEventsMixin:
             or is_leaf_graph_step
         )
 
-        if hasattr(self, "ensure_execution_monitor_panel_visible"):
-            self.ensure_execution_monitor_panel_visible(visible=should_show_monitor)
+        self.right_panel.ensure_visible(
+            "execution_monitor",
+            visible=should_show_monitor,
+            switch_to=bool(switch_to and should_show_monitor),
+        )
+        return should_show_monitor

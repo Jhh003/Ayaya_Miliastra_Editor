@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -20,11 +21,54 @@ from .comprehensive_types import ValidationIssue
 from .issue import EngineIssue
 
 
+_RANGE_PLACEHOLDER_PORT_PATTERN = re.compile(r"^(?P<prefix>.*?)(?P<start>\d+)~(?P<end>\d+)$")
+
+
+def _parse_range_placeholder_port_name(port_name: str) -> tuple[str, int, int] | None:
+    """解析形如 '0~99' 或 '键0~49' 的“范围占位端口”名称。
+
+    约定：
+    - 该类端口用于表达“可变数量/按序号展开”的端口集合；
+    - 图数据中可能将其展开为 '0','1','2' 或 '键0','键1' 等具体端口名；
+    - 端口一致性校验中应允许“占位端口 ↔ 展开端口”互相满足。
+    """
+    text = str(port_name or "").strip()
+    if not text:
+        return None
+    match = _RANGE_PLACEHOLDER_PORT_PATTERN.match(text)
+    if not match:
+        return None
+    prefix = str(match.group("prefix") or "")
+    start = int(match.group("start"))
+    end = int(match.group("end"))
+    if start > end:
+        start, end = end, start
+    return prefix, start, end
+
+
+def _matches_range_placeholder(actual_port_name: str, *, prefix: str, start: int, end: int) -> bool:
+    """判断某个实际端口名是否可视为占位端口的展开成员。"""
+    name_text = str(actual_port_name or "").strip()
+    if not name_text:
+        return False
+    if prefix:
+        if not name_text.startswith(prefix):
+            return False
+        suffix = name_text[len(prefix):]
+    else:
+        suffix = name_text
+    if not suffix.isdigit():
+        return False
+    index = int(suffix)
+    return start <= index <= end
+
+
 def _append_validation_issue(
     validator: Any,
     *,
     level: str,
     category: str,
+    code: str = "",
     location: str,
     message: str,
     detail: Dict[str, Any],
@@ -34,6 +78,7 @@ def _append_validation_issue(
     issue = ValidationIssue(
         level=level,
         category=category,
+        code=code,
         location=location,
         message=message,
         suggestion=suggestion,
@@ -113,6 +158,7 @@ def validate_graph_structure(
             validator,
             level="warning",
             category="节点图结构",
+            code="GRAPH_NO_EVENT_NODES",
             location=location,
             message="节点图中没有事件节点（入口点）",
             suggestion="请至少保留一个事件节点作为执行入口，例如'进入游戏'或'定时器'。",
@@ -138,6 +184,7 @@ def validate_graph_structure(
                 validator,
                 level="warning",
                 category="节点图结构",
+                code="GRAPH_NODE_ISOLATED",
                 location=f"{location} > 节点 '{node_name}'",
                 message=f"节点'{node_name}'没有任何连接，是孤立的",
                 suggestion="孤立节点不会被执行，如果不需要请删除，否则请建立连线。",
@@ -163,6 +210,7 @@ def validate_node_mount_and_scope(
                 validator,
                 level=error.level or "error",
                 category=error.category or "节点挂载",
+                code=error.code or "",
                 location=f"{location} > 节点 '{node_name}'",
                 message=error.message,
                 reference=error.reference or "",
@@ -180,6 +228,7 @@ def validate_node_mount_and_scope(
                 validator,
                 level=error.level or "error",
                 category=error.category or "复合节点作用域",
+                code=error.code or "",
                 location=f"{location} > 节点 '{node_name}'",
                 message=error.message,
                 reference=error.reference or "",
@@ -194,6 +243,8 @@ def _run_structural_validation_errors(
     edges: Optional[List[Dict[str, Any]]] = None,
     virtual_pin_mappings: Optional[Dict] = None,
     graph_model: Optional[GraphModel] = None,
+    workspace_path: Optional[Path] = None,
+    node_library: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     normalized_nodes, normalized_edges = _normalize_graph_components(graph_data, nodes, edges)
     incomplete_edge_errors = _collect_incomplete_edge_errors(normalized_edges)
@@ -202,7 +253,12 @@ def _run_structural_validation_errors(
         nodes=normalized_nodes,
         edges=normalized_edges,
     )
-    structural_errors = run_graph_validation(model, virtual_pin_mappings)
+    structural_errors = run_graph_validation(
+        model,
+        virtual_pin_mappings,
+        workspace_path=workspace_path,
+        node_library=node_library,
+    )
     return incomplete_edge_errors + structural_errors
 
 
@@ -216,19 +272,24 @@ def validate_graph_unified(
     edges: Optional[List[Dict[str, Any]]] = None,
     graph_model: Optional[GraphModel] = None,
 ) -> None:
+    node_library = _ensure_node_library(validator)
+    workspace_path = _resolve_workspace_path(validator)
     errors = _run_structural_validation_errors(
         graph_data,
         nodes=nodes,
         edges=edges,
         virtual_pin_mappings=virtual_pin_mappings,
         graph_model=graph_model,
+        workspace_path=workspace_path,
+        node_library=node_library,
     )
     for error in errors:
-        category, suggestion, _ = describe_graph_error(error)
+        category, suggestion, code = describe_graph_error(error)
         _append_validation_issue(
             validator,
             level="error",
             category=category,
+            code=code,
             location=location,
             message=error,
             suggestion=suggestion,
@@ -304,6 +365,7 @@ def validate_node_port_consistency(
             validator,
             level="warning",
             category="节点端口定义",
+            code="NODE_DEF_MISSING",
             location=f"{location} > 节点 '{node_title}'",
             message="节点定义缺失，无法校验端口，请确认节点库或工作区路径配置正确。",
             suggestion="请刷新节点库或重新导出节点定义后再运行校验。",
@@ -317,6 +379,20 @@ def validate_node_port_consistency(
     expected_input_names = set(node_def.inputs)
     expected_output_names = set(node_def.outputs)
     missing_inputs = expected_input_names - actual_input_names
+
+    # 可变端口占位符兼容：例如节点定义使用 '0~99'，但图数据展开为 '0','1','2'。
+    # 此时不应视为“缺少占位端口”。
+    if missing_inputs:
+        for expected_name in list(missing_inputs):
+            parsed = _parse_range_placeholder_port_name(expected_name)
+            if parsed is None:
+                continue
+            prefix, start, end = parsed
+            if any(
+                _matches_range_placeholder(actual_name, prefix=prefix, start=start, end=end)
+                for actual_name in actual_input_names
+            ):
+                missing_inputs.discard(expected_name)
     if missing_inputs:
         node_detail = detail.copy()
         node_detail["node_id"] = node_id
@@ -326,6 +402,7 @@ def validate_node_port_consistency(
             validator,
             level="error",
             category="节点端口定义",
+            code="NODE_PORTS_MISSING_INPUTS",
             location=f"{location} > 节点 '{node_title}'",
             message=f"节点缺少输入端口: {', '.join(sorted(missing_inputs))}",
             suggestion=f"根据节点定义（{node_def_key}）补全输入端口。",
@@ -342,6 +419,7 @@ def validate_node_port_consistency(
             validator,
             level="error",
             category="节点端口定义",
+            code="NODE_PORTS_MISSING_OUTPUTS",
             location=f"{location} > 节点 '{node_title}'",
             message=f"节点缺少输出端口: {', '.join(sorted(missing_outputs))}",
             suggestion=f"根据节点定义（{node_def_key}）补全输出端口。",
@@ -368,6 +446,7 @@ def validate_edge_port_references(
             validator,
             level="error",
             category="节点图连接",
+            code="EDGE_SRC_NODE_MISSING",
             location=f"{location} > 边 '{edge_id}'",
             message=f"边引用的源节点'{src_node_id}'不存在",
             suggestion="请确保源节点存在于节点列表中。",
@@ -382,6 +461,7 @@ def validate_edge_port_references(
             validator,
             level="error",
             category="节点图连接",
+            code="EDGE_DST_NODE_MISSING",
             location=f"{location} > 边 '{edge_id}'",
             message=f"边引用的目标节点'{dst_node_id}'不存在",
             suggestion="请确保目标节点存在于节点列表中。",
@@ -467,6 +547,7 @@ def _emit_missing_port_issue(
         validator,
         level="error",
         category="节点图连接",
+        code="EDGE_PORT_MISSING",
         location=f"{location} > 边 '{edge_id}'",
         message=f"边引用的{role}端口'{port_name}'在节点'{node_title}'中不存在",
         suggestion=f"{role}节点的可用端口: {', '.join(sorted(readable_ports)) or '(无)'}",

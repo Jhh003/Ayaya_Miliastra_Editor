@@ -225,7 +225,7 @@ def main() -> None:
     for python_file in sorted(iter_workspace_py_files(workspace_root, arguments.include_snapshots)):
         posix_path = python_file.as_posix()
         # 跳过非 Python DSL 或语法不标准目录
-        if "/core/configs/" in posix_path:
+        if "/engine/configs/" in posix_path:
             continue
         if "/node_definitions/" in posix_path:
             continue

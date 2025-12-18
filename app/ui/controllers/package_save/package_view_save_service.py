@@ -107,10 +107,13 @@ class PackageViewSaveService:
             need_save_index = True
 
         if need_save_index:
-            self._index_persist_service.persist(
+            index_saved = self._index_persist_service.persist(
                 package_index=package_index,
                 current_package_id=current_package_id,
             )
+            if not index_saved:
+                # 索引未写入：为避免上层误判为“已保存”并清空 dirty_state，这里直接返回 False。
+                return False
             did_write = True
         elif did_write:
             self._index_persist_service.refresh_after_write()

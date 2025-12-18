@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 from enum import Enum
 
+from engine.type_registry import (
+    BASIC_STRUCT_SUPPORTED_TYPES as _REGISTRY_BASIC_STRUCT_SUPPORTED_TYPES,
+    INGAME_SAVE_STRUCT_SUPPORTED_TYPES as _REGISTRY_INGAME_SAVE_STRUCT_SUPPORTED_TYPES,
+)
 
 # ============================================================================
 # 节点图核心
@@ -99,38 +103,12 @@ STRUCT_TYPE_INGAME_SAVE: str = "ingame_save"
 
 
 # 结构体支持的数据类型（基础结构体）
-BASIC_STRUCT_SUPPORTED_TYPES: List[str] = [
-    "实体",
-    "GUID",
-    "整数",
-    "布尔值",
-    "浮点数",
-    "字符串",
-    "阵营",
-    "三维向量",
-    "元件ID",
-    "配置ID",
-    "结构体",
-    "字典",
-    "实体列表",
-    "GUID列表",
-    "整数列表",
-    "布尔值列表",
-    "浮点数列表",
-    "字符串列表",
-    "阵营列表",
-    "三维向量列表",
-    "元件ID列表",
-    "配置ID列表",
-    "结构体列表",
-]
+BASIC_STRUCT_SUPPORTED_TYPES: List[str] = list(_REGISTRY_BASIC_STRUCT_SUPPORTED_TYPES)
 
 # 局内存档结构体支持的数据类型（不包含字典）
-INGAME_SAVE_STRUCT_SUPPORTED_TYPES: List[str] = [
-    type_name
-    for type_name in BASIC_STRUCT_SUPPORTED_TYPES
-    if type_name != "字典"
-]
+INGAME_SAVE_STRUCT_SUPPORTED_TYPES: List[str] = list(
+    _REGISTRY_INGAME_SAVE_STRUCT_SUPPORTED_TYPES
+)
 
 
 @dataclass

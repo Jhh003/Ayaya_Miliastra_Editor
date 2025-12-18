@@ -321,10 +321,13 @@ def _generate_data_tree(
 
                 node_info = f"{node.title}"
                 if node.input_constants:
-                    constants = ", ".join(
-                        f"{key}={value.strip('\"')[:10]}"
-                        for key, value in node.input_constants.items()
-                    )
+                    # 注意：Python 3.10 的 f-string 表达式部分不允许包含反斜杠（例如 '\"'）。
+                    # 这里先在普通表达式中处理字符串，再拼接 f-string，保证低版本兼容。
+                    constant_parts: List[str] = []
+                    for key, value in node.input_constants.items():
+                        display_value = str(value).strip("\"'")
+                        constant_parts.append(f"{key}={display_value[:10]}")
+                    constants = ", ".join(constant_parts)
                     node_info += f" {{{constants}}}"
 
                 lines.append(f"  {connector}{node_info}")

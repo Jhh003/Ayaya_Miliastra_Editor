@@ -35,6 +35,24 @@ class RootExecutionPlan:
 
 
 @dataclass(frozen=True)
+class RemainingEventFlowsExecutionPlan:
+    """“从当前事件流起执行剩余事件流”的规划结果。"""
+
+    current_flow_root: TodoItem
+    graph_root: TodoItem
+    flow_roots: List[TodoItem]
+    step_list: List[TodoItem]
+
+
+@dataclass(frozen=True)
+class RemainingEventFlowsExecutionError:
+    """“剩余事件流执行”规划失败原因（供 UI 层提示）。"""
+
+    reason: str
+    user_message: str = ""
+
+
+@dataclass(frozen=True)
 class StepExecutionPlan:
     """单步/从此步起执行规划结果。"""
 
@@ -109,6 +127,82 @@ def plan_event_flow_root_execution(
 
     step_list = ExecutionPlanner.plan_steps(flow_root_todo, todo_map)
     return RootExecutionPlan(root_todo=flow_root_todo, step_list=step_list)
+
+
+def plan_remaining_event_flows_execution(
+    context: CurrentTodoContext,
+    todo_map: Dict[str, TodoItem],
+    *,
+    find_template_root_for_item: Optional[FindTemplateRootForItem] = None,
+    find_event_flow_root_for_todo: Optional[FindEventFlowRootForTodo] = None,
+) -> Tuple[Optional[RemainingEventFlowsExecutionPlan], Optional[RemainingEventFlowsExecutionError]]:
+    """规划“从当前事件流起，连续执行同一节点图下的剩余事件流序列”。"""
+    current_flow_root = resolve_current_todo_for_root(
+        context,
+        find_template_root_for_item=find_template_root_for_item,
+        find_event_flow_root_for_todo=find_event_flow_root_for_todo,
+        root_type="flow",
+    )
+    if current_flow_root is None:
+        return None, RemainingEventFlowsExecutionError(
+            reason="no_current_todo",
+            user_message="内部错误：未找到当前任务项（current_todo）",
+        )
+
+    graph_root_id = _resolve_graph_root_todo_id_for_flow(current_flow_root)
+    if not graph_root_id:
+        return None, RemainingEventFlowsExecutionError(
+            reason="missing_graph_root_id",
+            user_message="内部错误：无法确定当前事件流所属的节点图根 Todo",
+        )
+
+    graph_root = todo_map.get(graph_root_id)
+    if graph_root is None:
+        return None, RemainingEventFlowsExecutionError(
+            reason="graph_root_not_found",
+            user_message="内部错误：未找到所属节点图根 Todo",
+        )
+
+    flow_roots_in_graph: List[TodoItem] = []
+    for child_id in graph_root.children:
+        child = todo_map.get(child_id)
+        if child is None:
+            continue
+        detail_info = child.detail_info or {}
+        if detail_info.get("type") == "event_flow_root":
+            flow_roots_in_graph.append(child)
+
+    if not flow_roots_in_graph:
+        return None, RemainingEventFlowsExecutionError(
+            reason="no_event_flows",
+            user_message="当前节点图未发现任何事件流",
+        )
+
+    start_index = -1
+    for index, flow_root in enumerate(flow_roots_in_graph):
+        if flow_root.todo_id == current_flow_root.todo_id:
+            start_index = index
+            break
+    if start_index == -1:
+        return None, RemainingEventFlowsExecutionError(
+            reason="current_flow_not_in_graph",
+            user_message="内部错误：当前事件流不在所属节点图的事件流列表中",
+        )
+
+    remaining_flow_roots = flow_roots_in_graph[start_index:]
+    step_list: List[TodoItem] = []
+    for flow_root in remaining_flow_roots:
+        planned_steps = ExecutionPlanner.plan_steps(flow_root, todo_map)
+        if planned_steps:
+            step_list.extend(planned_steps)
+
+    plan = RemainingEventFlowsExecutionPlan(
+        current_flow_root=current_flow_root,
+        graph_root=graph_root,
+        flow_roots=remaining_flow_roots,
+        step_list=step_list,
+    )
+    return plan, None
 
 
 # === 步骤级执行规划 ===
@@ -240,5 +334,15 @@ def _build_step_sequence(
     if start_index == -1:
         return [start_todo]
     return planned_steps[start_index:]
+
+
+def _resolve_graph_root_todo_id_for_flow(flow_root: TodoItem) -> str:
+    """从事件流根 Todo 推导其所属的节点图根 Todo ID。"""
+    detail_info = flow_root.detail_info or {}
+    raw_root_id = detail_info.get("graph_root_todo_id")
+    if isinstance(raw_root_id, str) and raw_root_id:
+        return raw_root_id
+    parent_id = getattr(flow_root, "parent_id", "") or ""
+    return str(parent_id) if parent_id else ""
 
 

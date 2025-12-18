@@ -24,8 +24,12 @@ _CREATED_NODE_ID_FIELDS: Dict[str, str] = {
 }
 
 
-def _get_created_node_id_from_detail(detail_info: object) -> str:
-    """根据 detail_info 提取“新创建节点”的 node_id，集中维护映射规则。"""
+def get_created_node_id_from_detail(detail_info: object) -> str:
+    """根据 detail_info 提取“新创建节点”的 node_id。
+
+    这是供跨模块调用的公开 API：外部若需要“从 Todo.detail_info 推导创建节点 ID”，
+    应调用该函数，而不是依赖下划线开头的私有实现细节。
+    """
     if not isinstance(detail_info, dict):
         return ""
     detail_type = detail_info.get("type", "")
@@ -34,6 +38,11 @@ def _get_created_node_id_from_detail(detail_info: object) -> str:
         return ""
     node_identifier = detail_info.get(field_name)
     return str(node_identifier) if node_identifier is not None else ""
+
+
+def _get_created_node_id_from_detail(detail_info: object) -> str:
+    """兼容旧调用点的私有别名：请改用 `get_created_node_id_from_detail`。"""
+    return get_created_node_id_from_detail(detail_info)
 
 
 def _scan_flows_for_latest_visible_step(
@@ -50,7 +59,7 @@ def _scan_flows_for_latest_visible_step(
             step_todo = todo_map.get(child_identifier)
             if not step_todo or step_todo.children:
                 continue
-            created_node_identifier = _get_created_node_id_from_detail(
+            created_node_identifier = get_created_node_id_from_detail(
                 step_todo.detail_info
             )
             if not created_node_identifier or created_node_identifier not in visible_node_ids:

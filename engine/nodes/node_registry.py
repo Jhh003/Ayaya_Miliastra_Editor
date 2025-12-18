@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import asdict
 import json
+import threading
 
 from .node_definition_loader import load_all_nodes, NodeDef
 from .port_type_system import BOOLEAN_TYPE_KEYWORDS
@@ -12,6 +13,13 @@ from .pipeline.node_library import NodeLibrary
 from engine.utils.logging.logger import log_info
 from engine.utils.graph.node_defs_fingerprint import compute_node_defs_fingerprint
 from engine.utils.cache.cache_paths import get_node_cache_dir
+
+
+class NodeRegistryRecursiveLoadError(RuntimeError):
+    """NodeRegistry 在构建节点库过程中发生同线程重入时抛出。
+
+    说明：此类错误若被静默吞掉，会导致上层拿到空库/半成品库，后续表现为“随机缺节点”。
+    """
 
 
 class NodeRegistry:
@@ -31,6 +39,8 @@ class NodeRegistry:
         self._entity_input_params_by_func: Optional[Dict[str, Set[str]]] = None
         self._variadic_min_args: Optional[Dict[str, int]] = None
         self._is_loading: bool = False  # 加载中标志，防止递归加载
+        self._loading_thread_id: Optional[int] = None  # 记录当前加载线程，用于区分“同线程重入”和“跨线程并发”
+        self._library_load_completed_event: threading.Event = threading.Event()  # 用于跨线程等待加载完成
         self._index_cache: Optional[Dict[str, object]] = None
         self._node_library_view: Optional[NodeLibrary] = None
 
@@ -38,35 +48,52 @@ class NodeRegistry:
     def _ensure_library(self) -> None:
         if self._library is not None:
             return
-        
-        # 如果正在加载中，返回空字典避免递归（防止在加载复合节点时重复触发）
+
+        current_thread_id = threading.get_ident()
+
+        # 加载中：同线程重入直接报错；跨线程并发则等待加载完成
         if self._is_loading:
+            if self._loading_thread_id == current_thread_id:
+                raise NodeRegistryRecursiveLoadError(
+                    "NodeRegistry 发生递归加载：节点库构建过程中再次请求节点库。"
+                    "此行为会导致上层拿到空库/半成品库并引发随机缺节点。"
+                    "请检查调用链，确保复合节点加载/校验/代码生成等路径不要在节点库构建过程中再次触发 get_library/get_node_*。"
+                )
+            self._library_load_completed_event.wait()
+            if self._library is None:
+                raise RuntimeError("NodeRegistry 节点库加载失败或未完成：等待结束后仍未得到可用节点库")
             return
-        
+
         self._is_loading = True
-        
-        # 先尝试从持久化缓存加载
-        cached = self._load_persistent_node_library()
-        if cached is not None:
-            self._library = cached
-            # 命中缓存时清理索引视图，按需懒构建
-            self._index_cache = None
-            self._node_library_view = None
+        self._loading_thread_id = current_thread_id
+        self._library_load_completed_event.clear()
+
+        try:
+            # 先尝试从持久化缓存加载
+            cached = self._load_persistent_node_library()
+            if cached is not None:
+                self._library = cached
+                # 命中缓存时清理索引视图，按需懒构建
+                self._index_cache = None
+                self._node_library_view = None
+                return
+
+            # 未命中缓存：执行全量加载并写入缓存
+            log_info(
+                "[缓存][节点库] 未命中持久化缓存，开始全量扫描与解析"
+                f"（workspace={self.workspace_path}，include_composite={self.include_composite}）..."
+            )
+            # 以工作区根目录为节点实现库根路径（实现库位于 plugins/nodes）。
+            node_defs_root = self.workspace_path
+            loaded_library = load_all_nodes(node_defs_root, include_composite=self.include_composite, verbose=False)
+            log_info(f"[缓存][节点库] 解析完成，共 {len(loaded_library)} 个节点定义，写入持久化缓存中...")
+            self._library = loaded_library
+            self._save_persistent_node_library(loaded_library)
+        finally:
             self._is_loading = False
-            return
-        
-        # 未命中缓存：执行全量加载并写入缓存
-        log_info(
-            "[缓存][节点库] 未命中持久化缓存，开始全量扫描与解析"
-            f"（workspace={self.workspace_path}，include_composite={self.include_composite}）..."
-        )
-        # 以工作区根目录为节点实现库根路径（实现库位于 plugins/nodes）。
-        node_defs_root = self.workspace_path
-        lib = load_all_nodes(node_defs_root, include_composite=self.include_composite, verbose=False)
-        log_info(f"[缓存][节点库] 解析完成，共 {len(lib)} 个节点定义，写入持久化缓存中...")
-        self._library = lib
-        self._save_persistent_node_library(lib)
-        self._is_loading = False
+            self._loading_thread_id = None
+            # 无论成功/失败，都唤醒并发等待者；失败由等待者自行通过 _library 判定并抛错
+            self._library_load_completed_event.set()
 
     def _ensure_index(self) -> None:
         """
@@ -150,21 +177,24 @@ class NodeRegistry:
         self._entity_input_params_by_func = None
         self._variadic_min_args = None
         self._is_loading = False
+        self._loading_thread_id = None
+        self._library_load_completed_event.clear()
         self._index_cache = None
         self._node_library_view = None
 
     def get_library(self) -> Dict[str, NodeDef]:
         self._ensure_library()
-        return self._library or {}
+        if self._library is None:
+            raise RuntimeError("节点库尚未构建完成：get_library 在节点库不可用时被调用")
+        return self._library
 
     # ------------------------ 统一查询入口 ------------------------
     def get_node_by_key(self, key: str) -> Optional[NodeDef]:
         """
         按标准键 `类别/名称` 获取节点定义。
         """
-        self._ensure_library()
-        lib = self._library or {}
-        return lib.get(str(key))
+        node_library = self.get_library()
+        return node_library.get(str(key))
 
     def get_node_by_alias(self, category: str, name_or_alias: str) -> Optional[NodeDef]:
         """
@@ -208,8 +238,8 @@ class NodeRegistry:
         if self._node_library_view is not None:
             base_names = self._node_library_view.get_flow_node_names()
         # 复合节点：补充扫描 _library
-        self._ensure_library()
-        for _, node_def in (self._library or {}).items():
+        node_library = self.get_library()
+        for _, node_def in node_library.items():
             if getattr(node_def, "is_composite", False):
                 has_flow = (
                     any((isinstance(t, str) and ("流程" in t)) for t in node_def.input_types.values()) or
@@ -231,8 +261,8 @@ class NodeRegistry:
         if self._node_library_view is not None:
             names = set(self._node_library_view.get_boolean_node_names())
         # 复合节点：补充扫描 _library
-        self._ensure_library()
-        for _, node_def in (self._library or {}).items():
+        node_library = self.get_library()
+        for _, node_def in node_library.items():
             if getattr(node_def, "is_composite", False):
                 for _, port_type in node_def.output_types.items():
                     if isinstance(port_type, str) and any(k in port_type for k in BOOLEAN_TYPE_KEYWORDS):
@@ -244,9 +274,9 @@ class NodeRegistry:
     def get_data_query_node_names(self) -> Set[str]:
         if self._data_query_node_names is not None:
             return self._data_query_node_names
-        self._ensure_library()
+        node_library = self.get_library()
         names: Set[str] = set()
-        for _, node_def in (self._library or {}).items():
+        for _, node_def in node_library.items():
             cat = getattr(node_def, "category", "") or ""
             if isinstance(cat, str) and (("查询" in cat) or ("运算" in cat)):
                 names.add(node_def.name)
@@ -256,9 +286,9 @@ class NodeRegistry:
     def get_entity_input_params_by_func(self) -> Dict[str, Set[str]]:
         if self._entity_input_params_by_func is not None:
             return self._entity_input_params_by_func
-        self._ensure_library()
+        node_library = self.get_library()
         mapping: Dict[str, Set[str]] = {}
-        for _, node_def in (self._library or {}).items():
+        for _, node_def in node_library.items():
             for port_name, port_type in node_def.input_types.items():
                 if isinstance(port_type, str) and ("实体" in port_type):
                     mapping.setdefault(node_def.name, set()).add(port_name)
@@ -274,8 +304,8 @@ class NodeRegistry:
         if self._node_library_view is not None:
             rules.update(self._node_library_view.get_variadic_min_args())
         # 复合节点：补充扫描 _library
-        self._ensure_library()
-        for _, node_def in (self._library or {}).items():
+        node_library = self.get_library()
+        for _, node_def in node_library.items():
             if getattr(node_def, "is_composite", False):
                 if not node_def.inputs:
                     continue

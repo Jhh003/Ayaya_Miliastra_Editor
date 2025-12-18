@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import ast
 import io
-import os
 import re
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 
+
+"""
+旧版迁移工具：将历史 `node_implementations/*_impl.py` 单文件实现拆分为按节点独立文件。
+
+当前仓库主线已迁移为 `plugins/nodes/` + V2 AST 管线（只解析不导入），通常不再需要本脚本。
+为了避免“脚本跑了但什么也没做”导致误判，本脚本在找不到旧版输入文件时会返回非零码并给出明确提示。
+
+用法：
+  python -X utf8 -m tools.split_impl_modules
+"""
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 ROOT_IMPL = WORKSPACE / "node_implementations"
@@ -137,7 +146,7 @@ def split_module(py_file: Path) -> None:
         _write_text(target_path, "".join(header_lines) + decorator_src + func_code)
 
 
-def main() -> None:
+def main() -> int:
     candidates = [
         ROOT_IMPL / "server_事件节点_impl.py",
         ROOT_IMPL / "server_执行节点_impl.py",
@@ -151,14 +160,24 @@ def main() -> None:
         ROOT_IMPL / "client_运算节点_impl.py",
     ]
 
-    for f in candidates:
-        if f.exists():
-            split_module(f)
+    existing_sources = [f for f in candidates if f.exists()]
+    if not existing_sources:
+        print(
+            "[ERROR] 未找到任何旧版 node_implementations/*_impl.py 输入文件。\n"
+            "        该脚本仅用于旧结构的拆分迁移；当前仓库已使用 plugins/nodes/ 分散实现。\n"
+            "        若需检查实现文件是否符合 @node_spec 约定，请使用：python -X utf8 -m tools.check_impl_node_specs"
+        )
+        return 2
+
+    for source_file in existing_sources:
+        split_module(source_file)
 
     # 可选：不自动删除旧文件，交由后续步骤处理
+    print(f"[OK] 拆分完成：处理源文件数量 {len(existing_sources)}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 
 

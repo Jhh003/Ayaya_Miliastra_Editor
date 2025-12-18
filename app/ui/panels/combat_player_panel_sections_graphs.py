@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.ui.panels.combat_player_panel_sections_types import _GraphBindingContext
+from app.ui.panels.panel_dict_utils import ensure_dict_field, ensure_list_field
 
 
 class CombatPlayerPanelSectionsGraphsMixin:
@@ -28,15 +29,8 @@ class CombatPlayerPanelSectionsGraphsMixin:
             return
 
         player_section = self.player_editor.player
-        graphs_value = player_section.get("graphs")
-        if not isinstance(graphs_value, list):
-            graphs_value = []
-            player_section["graphs"] = graphs_value
-
-        overrides_value = player_section.get("graph_variable_overrides")
-        if not isinstance(overrides_value, dict):
-            overrides_value = {}
-            player_section["graph_variable_overrides"] = overrides_value
+        graphs_value = ensure_list_field(player_section, "graphs")
+        overrides_value = ensure_dict_field(player_section, "graph_variable_overrides")
 
         self.player_graphs_context = _GraphBindingContext(
             default_graphs=graphs_value,
@@ -58,15 +52,8 @@ class CombatPlayerPanelSectionsGraphsMixin:
             return
 
         role_section = self.player_editor.role
-        graphs_value = role_section.get("graphs")
-        if not isinstance(graphs_value, list):
-            graphs_value = []
-            role_section["graphs"] = graphs_value
-
-        overrides_value = role_section.get("graph_variable_overrides")
-        if not isinstance(overrides_value, dict):
-            overrides_value = {}
-            role_section["graph_variable_overrides"] = overrides_value
+        graphs_value = ensure_list_field(role_section, "graphs")
+        overrides_value = ensure_dict_field(role_section, "graph_variable_overrides")
 
         self.role_graphs_context = _GraphBindingContext(
             default_graphs=graphs_value,

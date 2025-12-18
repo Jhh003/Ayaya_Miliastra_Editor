@@ -4,12 +4,15 @@ from typing import Tuple, Optional
 
 from engine.graph.models.graph_config import GraphConfig
 from engine.graph.models.graph_model import GraphModel
+from engine.graph.semantic import GraphSemanticPass
 from engine.resources.resource_manager import ResourceType, ResourceManager
 
 
 def deserialize_model(graph_data: dict) -> GraphModel:
     """将图数据反序列化为 GraphModel。"""
-    return GraphModel.deserialize(graph_data or {})
+    model = GraphModel.deserialize(graph_data or {})
+    GraphSemanticPass.apply(model)
+    return model
 
 
 def load_graph_by_id(resource_manager: ResourceManager, graph_id: str) -> Tuple[Optional[GraphConfig], Optional[GraphModel]]:
@@ -22,6 +25,7 @@ def load_graph_by_id(resource_manager: ResourceManager, graph_id: str) -> Tuple[
         return None, None
     graph_config = GraphConfig.deserialize(data)
     model = GraphModel.deserialize(graph_config.data or {})
+    GraphSemanticPass.apply(model)
     return graph_config, model
 
 

@@ -17,8 +17,8 @@ def parse_composite_defs(
     """
     解析复合节点定义为 NodeDef 字典。
 
-    说明：直接使用 CompositeCodeParser 解析函数格式复合节点文件，
-    基于解析得到的 VirtualPinConfig 列表构建 NodeDef，保持与旧管理器行为一致：
+    说明：直接使用 CompositeCodeParser 解析复合节点文件（payload / 类格式），
+    基于解析得到的 VirtualPinConfig 列表构建 NodeDef，保持与管理器行为一致：
     - 输入/输出名称来源于虚拟引脚名称
     - 端口类型：流程口统一为“流程”，数据口使用虚拟引脚声明类型
     - 节点类别自动判断：有输入流程→执行节点；仅有输出流程→事件节点；否则查询节点
@@ -27,7 +27,11 @@ def parse_composite_defs(
     if not isinstance(workspace_path, Path):
         raise TypeError("workspace_path 必须是 pathlib.Path 实例")
 
-    parser = CompositeCodeParser(node_library=base_node_library, verbose=verbose)
+    parser = CompositeCodeParser(
+        node_library=base_node_library,
+        verbose=verbose,
+        workspace_path=workspace_path,
+    )
 
     def _to_node_def(composite: CompositeNodeConfig) -> NodeDef:
         """转换复合节点配置为 NodeDef（使用统一的转换函数）"""

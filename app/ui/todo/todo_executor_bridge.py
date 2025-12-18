@@ -8,16 +8,16 @@ from engine.graph.models.graph_model import GraphModel
 from app.automation.editor.editor_executor import EditorExecutor
 from app.ui.execution import ExecutionRunner
 from app.ui.execution.guides import ExecutionGuides
-from app.ui.execution.planner import ExecutionPlanner
 from app.ui.todo.todo_config import StepTypeRules
 from app.ui.execution.strategies.step_skip_checker import SINGLE_STEP_SKIP_REASON
-from app.ui.todo.current_todo_resolver import build_context_from_host, resolve_current_todo_for_leaf
+from app.ui.todo.todo_ui_context import TodoUiContext
 from app.ui.todo.todo_execution_service import (
     RootExecutionPlan,
     StepExecutionPlan,
     StepExecutionError,
     plan_template_root_execution,
     plan_event_flow_root_execution,
+    plan_remaining_event_flows_execution,
     plan_execute_from_this_step,
     plan_single_step_execution,
 )
@@ -36,6 +36,8 @@ class TodoExecutorBridge(QtCore.QObject):
     def __init__(
         self,
         host_widget,  # TodoListWidget（用于访问 tree/nav/main_window/notify）
+        *,
+        ui_context: TodoUiContext,
         tree_manager=None,
         runtime_state=None,
         preview_panel=None,
@@ -43,6 +45,7 @@ class TodoExecutorBridge(QtCore.QObject):
     ) -> None:
         super().__init__(host_widget)
         self.host = host_widget
+        self.ui_context = ui_context
         self.tree_manager = tree_manager
         self.runtime_state = runtime_state
         self.preview_panel = preview_panel
@@ -82,77 +85,32 @@ class TodoExecutorBridge(QtCore.QObject):
             self._notify("内部错误：任务树管理器未初始化，无法解析事件流", "error")
             return
 
-        context = build_context_from_host(self.host)
-        todo_map = getattr(self.tree_manager, "todo_map", {})
-        find_flow_root = (
-            self.tree_manager.find_event_flow_root_for_todo
-            if hasattr(self.tree_manager, "find_event_flow_root_for_todo")
-            else None
-        )
-        root_plan = plan_event_flow_root_execution(
+        context = self.ui_context.build_current_todo_context()
+        todo_map = self.tree_manager.todo_map
+        find_flow_root = self.tree_manager.find_event_flow_root_for_todo
+        remaining_plan, error = plan_remaining_event_flows_execution(
             context,
             todo_map,
             find_template_root_for_item=self._find_template_graph_root_for_item,
             find_event_flow_root_for_todo=find_flow_root,
         )
-        if root_plan is None:
-            self._notify("内部错误：未找到当前任务项（current_todo）", "error")
+        if error is not None:
+            user_message = error.user_message or ""
+            toast_type = "warning" if error.reason == "no_event_flows" else "error"
+            self._notify(user_message or "内部错误：剩余事件流执行规划失败", toast_type)
+            return
+        if remaining_plan is None:
+            self._notify("内部错误：剩余事件流执行规划失败", "error")
             return
 
-        current_flow_root = root_plan.root_todo
-
+        current_flow_root = remaining_plan.current_flow_root
         item = self._get_item_by_id(current_flow_root.todo_id)
         template_root = self._find_template_graph_root_for_item(item) if item is not None else None
         graph_data = self._resolve_graph_data(current_flow_root, template_root or current_flow_root)
         if graph_data is None:
             return
 
-        detail_info = current_flow_root.detail_info or {}
-        graph_root_id = ""
-        raw_root_id = detail_info.get("graph_root_todo_id")
-        if isinstance(raw_root_id, str) and raw_root_id:
-            graph_root_id = raw_root_id
-        if not graph_root_id:
-            parent_identifier = str(current_flow_root.parent_id or "")
-            if parent_identifier:
-                graph_root_id = parent_identifier
-        if not graph_root_id:
-            self._notify("内部错误：无法确定当前事件流所属的节点图根 Todo", "error")
-            return
-
-        graph_root = todo_map.get(graph_root_id)
-        if graph_root is None:
-            self._notify("内部错误：未找到所属节点图根 Todo", "error")
-            return
-
-        flow_roots_in_graph = []
-        for child_id in graph_root.children:
-            child = todo_map.get(child_id)
-            if child is None:
-                continue
-            child_info = child.detail_info or {}
-            if child_info.get("type") == "event_flow_root":
-                flow_roots_in_graph.append(child)
-
-        if not flow_roots_in_graph:
-            self._notify("当前节点图未发现任何事件流", "warning")
-            return
-
-        start_index = -1
-        for index, flow_root in enumerate(flow_roots_in_graph):
-            if flow_root.todo_id == current_flow_root.todo_id:
-                start_index = index
-                break
-        if start_index == -1:
-            self._notify("内部错误：当前事件流不在所属节点图的事件流列表中", "error")
-            return
-
-        remaining_flow_roots = flow_roots_in_graph[start_index:]
-        step_list = []
-        for flow_root in remaining_flow_roots:
-            planned_steps = ExecutionPlanner.plan_steps(flow_root, todo_map)
-            if planned_steps:
-                step_list.extend(planned_steps)
+        step_list = list(remaining_plan.step_list)
 
         monitor = self._ensure_monitor_panel(switch_tab=True)
         if monitor is None:
@@ -204,17 +162,9 @@ class TodoExecutorBridge(QtCore.QObject):
         graph_data = self._resolve_graph_data(start_todo, root_todo)
         if graph_data is None:
             return
-        todo_map = getattr(self.tree_manager, "todo_map", {})
-        find_flow_root = (
-            self.tree_manager.find_event_flow_root_for_todo
-            if self.tree_manager and hasattr(self.tree_manager, "find_event_flow_root_for_todo")
-            else None
-        )
-        find_template_root = (
-            self.tree_manager.find_template_graph_root_for_todo
-            if self.tree_manager and hasattr(self.tree_manager, "find_template_graph_root_for_todo")
-            else None
-        )
+        todo_map = self.tree_manager.todo_map
+        find_flow_root = self.tree_manager.find_event_flow_root_for_todo
+        find_template_root = self.tree_manager.find_template_graph_root_for_todo
         step_plan = plan_execute_from_this_step(
             start_todo,
             todo_map,
@@ -232,6 +182,7 @@ class TodoExecutorBridge(QtCore.QObject):
         executor, graph_model = self._build_executor_and_model(graph_data, monitor)
         self._inject_context_to_monitor(monitor, graph_model, executor)
         self._selection_to_restore = step_plan.selection_to_restore
+        self._snapshot_tree_expanded_state()
         self._start_runner(executor, graph_model, step_list, monitor, continuous=True)
         self._notify("开始执行：从当前步到末尾", "info")
 
@@ -249,17 +200,9 @@ class TodoExecutorBridge(QtCore.QObject):
             self._notify("未找到执行监控面板，无法启动执行", "error")
             return
         executor, graph_model = self._build_executor_and_model(graph_data, monitor)
-        todo_map = getattr(self.tree_manager, "todo_map", {})
-        find_flow_root = (
-            self.tree_manager.find_event_flow_root_for_todo
-            if self.tree_manager and hasattr(self.tree_manager, "find_event_flow_root_for_todo")
-            else None
-        )
-        find_template_root = (
-            self.tree_manager.find_template_graph_root_for_todo
-            if self.tree_manager and hasattr(self.tree_manager, "find_template_graph_root_for_todo")
-            else None
-        )
+        todo_map = self.tree_manager.todo_map
+        find_flow_root = self.tree_manager.find_event_flow_root_for_todo
+        find_template_root = self.tree_manager.find_template_graph_root_for_todo
         step_plan, error = plan_single_step_execution(
             step_todo,
             todo_map,
@@ -267,7 +210,7 @@ class TodoExecutorBridge(QtCore.QObject):
             find_template_root_for_todo=find_template_root,
         )
         if error is not None:
-            user_message = getattr(error, "user_message", "") or ""
+            user_message = error.user_message or ""
             if user_message:
                 self._log_to_monitor_or_toast(user_message)
             else:
@@ -286,13 +229,12 @@ class TodoExecutorBridge(QtCore.QObject):
 
     def _execute_flow_root(self) -> None:
         # 定位当前事件流根任务（使用统一解析器：树选中 → current_todo_id → detail_info 匹配 → 父链回溯）
-        context = build_context_from_host(self.host)
-        todo_map = getattr(self.tree_manager, "todo_map", {})
-        find_flow_root = (
-            self.tree_manager.find_event_flow_root_for_todo
-            if self.tree_manager and hasattr(self.tree_manager, "find_event_flow_root_for_todo")
-            else None
-        )
+        if self.tree_manager is None:
+            self._notify("内部错误：任务树管理器未初始化，无法解析事件流", "error")
+            return
+        context = self.ui_context.build_current_todo_context()
+        todo_map = self.tree_manager.todo_map
+        find_flow_root = self.tree_manager.find_event_flow_root_for_todo
         root_plan = plan_event_flow_root_execution(
             context,
             todo_map,
@@ -332,8 +274,11 @@ class TodoExecutorBridge(QtCore.QObject):
         - 若解析结果不是模板图根，则通过 TodoTreeManager 回溯到模板图根；
         - 保持与事件流根入口一致，都直接依赖 current_todo_resolver 提供的根解析逻辑。
         """
-        context = build_context_from_host(self.host)
-        todo_map = getattr(self.tree_manager, "todo_map", {})
+        if self.tree_manager is None:
+            self._notify("内部错误：任务树管理器未初始化，无法解析模板图根", "error")
+            return
+        context = self.ui_context.build_current_todo_context()
+        todo_map = self.tree_manager.todo_map
         root_plan = plan_template_root_execution(
             context,
             todo_map,
@@ -353,10 +298,7 @@ class TodoExecutorBridge(QtCore.QObject):
             return
         executor, graph_model = self._build_executor_and_model(graph_data, monitor)
         # 清空坐标映射/识别缓存
-        if hasattr(monitor, 'log'):
-            executor.reset_mapping_state(monitor.log)
-        else:
-            executor.reset_mapping_state(None)
+        executor.reset_mapping_state(monitor.log)
         self._inject_context_to_monitor(monitor, graph_model, executor)
         if not step_list:
             monitor.start_monitoring()
@@ -364,14 +306,12 @@ class TodoExecutorBridge(QtCore.QObject):
             return
         # 预置第一步 tokens
         first_step = step_list[0] if step_list else None
-        if first_step is not None and hasattr(monitor, 'set_current_step_tokens'):
-            todo_map = getattr(self.tree_manager, 'todo_map', {}) if self.tree_manager else {}
-            first_todo = todo_map.get(first_step.todo_id)
+        if first_step is not None:
+            first_todo = self.tree_manager.todo_map.get(first_step.todo_id)
             if first_todo is not None:
                 tokens = self._ensure_tokens_for_todo(first_todo.todo_id)
-                if hasattr(monitor, 'set_current_step_context'):
-                    monitor.set_current_step_context(first_todo.title, "")
                 if isinstance(tokens, list):
+                    monitor.set_current_step_context(first_todo.title, "")
                     monitor.set_current_step_tokens(first_todo.todo_id, tokens)
         self._selection_to_restore = current_todo.todo_id
         self._snapshot_tree_expanded_state()
@@ -387,48 +327,33 @@ class TodoExecutorBridge(QtCore.QObject):
         self._run_total_steps = len(step_list) if isinstance(step_list, (list, tuple)) else 0
         self._run_is_continuous = bool(continuous)
         # 根据 todo_id 预先建立步骤顺序映射（用于在监控面板中展示 [index/total]）
-        try:
+        if isinstance(step_list, (list, tuple)):
             for idx, step in enumerate(step_list):
-                todo_id = getattr(step, "todo_id", "") or ""
+                todo_id = step.todo_id
                 if todo_id and todo_id not in self._run_step_order:
                     self._run_step_order[todo_id] = idx
-        except Exception:
-            # 映射失败不影响执行，仅影响结构化显示
-            self._run_step_order = {}
 
         self._execution_runner.finished.connect(lambda: setattr(self, "_execution_runner", None))
         self._execution_runner.step_will_start.connect(self._on_step_will_start)
         self._execution_runner.step_will_start.connect(self._pause_if_step_mode)
         self._execution_runner.step_will_start.connect(self._set_monitor_step_context)
-        if hasattr(monitor_panel, 'step_anchor_clicked'):
-            # 监控面板是长生命周期组件，避免在多次执行时重复绑定 step_anchor_clicked → _on_step_anchor_clicked
-            # 仅当监控面板实例发生变化时才重新连接
-            if self._monitor_panel_for_step_anchor is not monitor_panel:
-                monitor_panel.step_anchor_clicked.connect(self._on_step_anchor_clicked)
-                self._monitor_panel_for_step_anchor = monitor_panel
-        if continuous:
-            self._execution_runner.step_completed.connect(self._complete_task_and_advance)
-        else:
-            self._execution_runner.step_completed.connect(self._complete_task_only)
-        if hasattr(self._execution_runner, 'step_skipped'):
-            self._execution_runner.step_skipped.connect(self._mark_task_skipped)
+        # 监控面板是长生命周期组件，避免在多次执行时重复绑定 step_anchor_clicked → _on_step_anchor_clicked
+        # 仅当监控面板实例发生变化时才重新连接
+        if self._monitor_panel_for_step_anchor is not monitor_panel:
+            monitor_panel.step_anchor_clicked.connect(self._on_step_anchor_clicked)
+            self._monitor_panel_for_step_anchor = monitor_panel
+        self._execution_runner.step_completed.connect(self._on_step_completed)
+        self._execution_runner.step_skipped.connect(self._mark_task_skipped)
         self._execution_runner.finished.connect(self._restore_selection_after_run)
         self._execution_runner.finished.connect(self._restore_tree_expanded_state)
         # 结构化运行事件：准备本轮 run_id，并在结束时写入结果
-        if hasattr(monitor_panel, "begin_run") and callable(getattr(monitor_panel, "begin_run")):
-            try:
-                monitor_panel.begin_run(self._run_total_steps)
-            except Exception:
-                pass
-        if hasattr(monitor_panel, "end_run") and callable(getattr(monitor_panel, "end_run")):
-            def _on_run_finished_for_monitor() -> None:
-                success = not bool(self._run_had_failure)
-                try:
-                    monitor_panel.end_run(success)
-                except Exception:
-                    pass
+        monitor_panel.begin_run(self._run_total_steps)
 
-            self._execution_runner.finished.connect(_on_run_finished_for_monitor)
+        def _on_run_finished_for_monitor() -> None:
+            success = not bool(self._run_had_failure)
+            monitor_panel.end_run(success)
+
+        self._execution_runner.finished.connect(_on_run_finished_for_monitor)
 
         self._execution_runner.start(
             executor,
@@ -441,12 +366,9 @@ class TodoExecutorBridge(QtCore.QObject):
     def _snapshot_tree_expanded_state(self) -> None:
         """记录当前任务树中父节点的展开状态，用于执行结束后恢复。"""
         self._tree_expanded_state_snapshot = {}
-        tree_manager = self.tree_manager
-        if tree_manager is None or not hasattr(tree_manager, "get_item_map"):
+        if self.tree_manager is None:
             return
-        item_map = tree_manager.get_item_map()
-        if not isinstance(item_map, dict):
-            return
+        item_map = self.tree_manager.get_item_map()
         snapshot: dict[str, bool] = {}
         for todo_id, item in item_map.items():
             if not todo_id or item is None:
@@ -461,12 +383,9 @@ class TodoExecutorBridge(QtCore.QObject):
         """在执行结束后恢复任务树的展开状态，保证仍停留在原有展开结构。"""
         if not self._tree_expanded_state_snapshot:
             return
-        tree_manager = self.tree_manager
-        if tree_manager is None or not hasattr(tree_manager, "get_item_map"):
+        if self.tree_manager is None:
             return
-        item_map = tree_manager.get_item_map()
-        if not isinstance(item_map, dict):
-            return
+        item_map = self.tree_manager.get_item_map()
         for todo_id, was_expanded in self._tree_expanded_state_snapshot.items():
             item = item_map.get(todo_id)
             if item is None:
@@ -476,33 +395,22 @@ class TodoExecutorBridge(QtCore.QObject):
             item.setExpanded(bool(was_expanded))
         self._tree_expanded_state_snapshot = {}
 
-    # === Fallback 适配（未接入 TodoTreeManager / 预览面板时仍可工作） ===
+    # === Tree/Token 访问（统一依赖 TodoTreeManager，不再通过反射兜底） ===
 
     def _get_item_by_id(self, todo_id: str):
-        if self.tree_manager and hasattr(self.tree_manager, 'get_item_by_id'):
-            return self.tree_manager.get_item_by_id(todo_id)
-        # 回退：读取宿主映射
-        return getattr(self.host, '_item_map', {}).get(todo_id)
+        if self.tree_manager is None:
+            return None
+        return self.tree_manager.get_item_by_id(todo_id)
 
     def _ensure_tokens_for_todo(self, todo_id: str):
-        if self.tree_manager and hasattr(self.tree_manager, 'ensure_tokens_for_todo'):
-            return self.tree_manager.ensure_tokens_for_todo(todo_id)
-        # 回退：调用宿主生成 tokens 后读取
-        item = self._get_item_by_id(todo_id)
-        todo = self.host.todo_map.get(todo_id) if hasattr(self.host, 'todo_map') else None
-        role = getattr(self, 'RICH_SEGMENTS_ROLE', 0)
-        if item is None or todo is None or not hasattr(self.host, '_update_item_rich_tokens'):
+        if self.tree_manager is None:
             return None
-        self.host._update_item_rich_tokens(item, todo)
-        tokens = item.data(0, role)
-        return tokens if isinstance(tokens, list) else None
+        return self.tree_manager.ensure_tokens_for_todo(todo_id)
 
     def _update_item_incrementally(self, item, todo) -> None:
-        if self.tree_manager and hasattr(self.tree_manager, 'update_item_incrementally'):
-            self.tree_manager.update_item_incrementally(item, todo)
+        if self.tree_manager is None:
             return
-        if hasattr(self.host, '_update_item_incrementally'):
-            self.host._update_item_incrementally(item, todo)
+        self.tree_manager.update_item_incrementally(item, todo)
 
     # === Runner 槽 ===
 
@@ -512,14 +420,15 @@ class TodoExecutorBridge(QtCore.QObject):
     def _on_step_will_start(self, todo_id: str) -> None:
         self._select_task_by_id(todo_id)
 
-    def _complete_task_and_advance(self, todo_id: str, success: bool) -> None:
+    def _on_step_completed(self, todo_id: str, success: bool) -> None:
+        """执行完成回调：回填运行态，并在连续执行时自动推进到下一条任务。"""
         if self.tree_manager is None or self.runtime_state is None:
             return
         item = self._get_item_by_id(todo_id)
         if item is None:
             return
-        todo = getattr(self.tree_manager, 'todo_map', {}).get(todo_id)
-        # 结构化运行状态：记录失败标记
+        todo = self.tree_manager.todo_map.get(todo_id)
+
         if not success:
             self._run_had_failure = True
 
@@ -528,62 +437,27 @@ class TodoExecutorBridge(QtCore.QObject):
             item.setCheckState(0, QtCore.Qt.CheckState.Checked)
         else:
             self.runtime_state.mark_failed(todo_id, "该步骤执行失败")
-            if todo:
+            if todo is not None:
                 self._update_item_incrementally(item, todo)
 
-        # 将“步骤完成”写入执行监控的结构化事件表
-        monitor = getattr(self.host, "_monitor_window", None)
-        if monitor and hasattr(monitor, "notify_step_completed"):
-            try:
-                title = todo.title if todo else ""
-                index = self._run_step_order.get(todo_id)
-                total = self._run_total_steps or None
-                reason = None if success else "该步骤执行失败"
-                monitor.notify_step_completed(todo_id, title, index, total, success, reason)
-            except Exception:
-                pass
-        monitor = getattr(self.host, "_monitor_window", None)
-        if monitor and hasattr(monitor, "is_step_mode_enabled") and callable(getattr(monitor, "is_step_mode_enabled")):
-            if monitor.is_step_mode_enabled():
-                return
-        self.host.nav_controller.navigate_to_next_task()
+        monitor = self.host._monitor_window
+        if monitor is not None:
+            title = todo.title if todo is not None else ""
+            index = self._run_step_order.get(todo_id)
+            total = self._run_total_steps or None
+            reason = None if success else "该步骤执行失败"
+            monitor.notify_step_completed(todo_id, title, index, total, success, reason)
 
-    def _complete_task_only(self, todo_id: str, success: bool) -> None:
-        if self.tree_manager is None or self.runtime_state is None:
+        if not self._run_is_continuous:
             return
-        item = self._get_item_by_id(todo_id)
-        if item is None:
-            return
-        todo = getattr(self.tree_manager, 'todo_map', {}).get(todo_id)
-        # 结构化运行状态：记录失败标记
-        if not success:
-            self._run_had_failure = True
-
-        if success:
-            self.runtime_state.mark_success(todo_id)
-            item.setCheckState(0, QtCore.Qt.CheckState.Checked)
-        else:
-            self.runtime_state.mark_failed(todo_id, "该步骤执行失败")
-            if todo:
-                self._update_item_incrementally(item, todo)
-
-        # 将“步骤完成”写入执行监控的结构化事件表
-        monitor = getattr(self.host, "_monitor_window", None)
-        if monitor and hasattr(monitor, "notify_step_completed"):
-            try:
-                title = todo.title if todo else ""
-                index = self._run_step_order.get(todo_id)
-                total = self._run_total_steps or None
-                reason = None if success else "该步骤执行失败"
-                monitor.notify_step_completed(todo_id, title, index, total, success, reason)
-            except Exception:
-                pass
+        # 连续执行中，左侧树的“当前步骤选中”应以执行线程发出的 step_will_start 为准，
+        # 不在 step_completed 时按 UI 展示顺序做 next 导航，避免与重试/跳过等运行时决策产生错位。
 
     def _mark_task_skipped(self, todo_id: str, reason: str) -> None:
         if self.tree_manager is None or self.runtime_state is None:
             return
         item = self._get_item_by_id(todo_id)
-        todo = getattr(self.tree_manager, 'todo_map', {}).get(todo_id)
+        todo = self.tree_manager.todo_map.get(todo_id)
         if not item or not todo:
             return
         normalized_reason = str(reason or "该步骤因端点距离过远被跳过")
@@ -593,27 +467,27 @@ class TodoExecutorBridge(QtCore.QObject):
         self.runtime_state.mark_skipped(todo_id, normalized_reason)
         self._update_item_incrementally(item, todo)
         # 推送“跳过步骤”到执行监控结构化事件
-        monitor = getattr(self.host, "_monitor_window", None)
-        if monitor and hasattr(monitor, "notify_step_skipped"):
-            try:
-                title = todo.title
-                index = self._run_step_order.get(todo_id)
-                total = self._run_total_steps or None
-                monitor.notify_step_skipped(todo_id, title, index, total, normalized_reason)
-            except Exception:
-                pass
+        monitor = self.host._monitor_window
+        if monitor is not None:
+            title = todo.title
+            index = self._run_step_order.get(todo_id)
+            total = self._run_total_steps or None
+            monitor.notify_step_skipped(todo_id, title, index, total, normalized_reason)
 
     def _pause_if_step_mode(self, _todo_id: str) -> None:
-        monitor = getattr(self.host, "_monitor_window", None)
-        if monitor and hasattr(monitor, "is_step_mode_enabled") and callable(getattr(monitor, "is_step_mode_enabled")):
-            if monitor.is_step_mode_enabled() and hasattr(monitor, "request_pause"):
-                monitor.request_pause()
+        monitor = self.host._monitor_window
+        if monitor is None:
+            return
+        if monitor.is_step_mode_enabled():
+            monitor.request_pause()
 
     def _set_monitor_step_context(self, todo_id: str) -> None:
-        monitor = getattr(self.host, "_monitor_window", None)
-        if not monitor or not hasattr(monitor, "set_current_step_context"):
+        monitor = self.host._monitor_window
+        if monitor is None:
             return
-        todo = getattr(self.tree_manager, 'todo_map', {}).get(todo_id) if self.tree_manager else None
+        if self.tree_manager is None:
+            return
+        todo = self.tree_manager.todo_map.get(todo_id)
         if not todo:
             return
         parent_title = ""
@@ -622,28 +496,23 @@ class TodoExecutorBridge(QtCore.QObject):
             parent_item = item.parent()
             if parent_item is not None:
                 parent_id = parent_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-                parent_todo = getattr(self.tree_manager, "todo_map", {}).get(parent_id) if self.tree_manager else None
+                parent_todo = self.tree_manager.todo_map.get(parent_id)
                 if parent_todo:
                     parent_title = parent_todo.title
         monitor.set_current_step_context(todo.title, parent_title)
-        if hasattr(monitor, 'set_current_step_tokens'):
-            tokens = self._ensure_tokens_for_todo(todo_id)
-            if isinstance(tokens, list):
-                monitor.set_current_step_tokens(todo_id, tokens)
+        tokens = self._ensure_tokens_for_todo(todo_id)
+        if isinstance(tokens, list):
+            monitor.set_current_step_tokens(todo_id, tokens)
 
         # 同步结构化执行事件：记录“步骤开始”
-        if hasattr(monitor, "notify_step_started"):
-            try:
-                index = self._run_step_order.get(todo_id)
-                total = self._run_total_steps or None
-                monitor.notify_step_started(todo_id, todo.title, index, total)
-            except Exception:
-                pass
+        index = self._run_step_order.get(todo_id)
+        total = self._run_total_steps or None
+        monitor.notify_step_started(todo_id, todo.title, index, total)
 
     def _restore_selection_after_run(self) -> None:
         # 仅在连续执行（整图 / 从此步到末尾）场景下恢复选中项：
         # - 单步执行时，执行前后选中项本身就是当前步骤，无需额外恢复，避免打乱用户的浏览位置。
-        if not getattr(self, "_run_is_continuous", False):
+        if not self._run_is_continuous:
             return
 
         restore_id = self._selection_to_restore
@@ -673,7 +542,8 @@ class TodoExecutorBridge(QtCore.QObject):
             root_todo or focus_todo,
             preview_panel=self.preview_panel,
             tree_manager=self.tree_manager,
-            main_window=getattr(self.host, "main_window", None),
+            graph_data_service=self.ui_context.get_graph_data_service(),
+            current_package=self.ui_context.try_get_current_package(),
         )
         if isinstance(graph_data, dict) and ("nodes" in graph_data or "edges" in graph_data):
             return graph_data
@@ -682,67 +552,43 @@ class TodoExecutorBridge(QtCore.QObject):
         return None
 
     def _ensure_monitor_panel(self, switch_tab: bool = False):
-        main_window = getattr(self.host, "main_window", None)
-        if not main_window or not hasattr(main_window, "execution_monitor_panel"):
-            return None
-
-        monitor_panel = main_window.execution_monitor_panel
-        # 优先通过主窗口提供的公开 API 管理右侧标签，避免在 todo 层直接操作 side_tab 结构。
-        ensure_visible = getattr(main_window, "ensure_execution_monitor_panel_visible", None)
-        if callable(ensure_visible):
-            ensure_visible(visible=True, switch_to=switch_tab)
-        else:
-            # 当主窗口未提供显式 API 时，退回到直接挂载逻辑。
-            side_tab = getattr(main_window, "side_tab", None)
-            if side_tab is not None:
-                index_in_tab = side_tab.indexOf(monitor_panel)
-                if index_in_tab == -1:
-                    tab_title = "执行监控"
-                    if hasattr(main_window, "_tab_title_for_id"):
-                        tab_title = main_window._tab_title_for_id("execution_monitor")
-                    side_tab.addTab(monitor_panel, tab_title)
-                if switch_tab:
-                    side_tab.setCurrentWidget(monitor_panel)
-                if hasattr(main_window, "_update_right_panel_visibility"):
-                    main_window._update_right_panel_visibility()
-
-        self.host._monitor_window = monitor_panel
-        return monitor_panel
+        return self.ui_context.ensure_execution_monitor_panel(switch_to=switch_tab)
 
     def _inject_context_to_monitor(self, monitor_panel, graph_model: GraphModel, executor: Optional[EditorExecutor] = None) -> None:
-        if not monitor_panel or not hasattr(monitor_panel, 'set_context'):
+        if monitor_panel is None:
             return
-        view_ref = self.host.main_window.view if (self.host.main_window and hasattr(self.host.main_window, 'view')) else None
-        monitor_panel.set_context(self._get_workspace_path(), graph_model, view_ref)
-        if executor is not None and hasattr(monitor_panel, "set_shared_executor"):
+        view_ref = None
+        app_state = self.ui_context.get_app_state()
+        if app_state is not None:
+            view_ref = app_state.graph_view
+        workspace_path = self.ui_context.try_get_workspace_path()
+        if workspace_path is None:
+            self._notify("工作区未就绪，无法注入监控上下文", "error")
+            return
+        monitor_panel.set_context(workspace_path, graph_model, view_ref)
+        if executor is not None:
             monitor_panel.set_shared_executor(executor)
-        if hasattr(monitor_panel, 'recognition_focus_succeeded'):
-            if not getattr(monitor_panel, '_todo_recognition_bound', False):
-                orchestrator = getattr(self.host, "_orchestrator", None)
-                if orchestrator is not None and hasattr(orchestrator, "on_recognition_focus_succeeded"):
-                    monitor_panel.recognition_focus_succeeded.connect(orchestrator.on_recognition_focus_succeeded)
-                    setattr(monitor_panel, '_todo_recognition_bound', True)
+        # 将“定位镜头识别成功”统一透传到 TodoPreviewPanel 的信号上，由编排层集中处理回填，
+        # 避免同时存在“监控面板→编排层”和“监控面板→预览面板→编排层”两条链路导致重复回调。
+        if self.preview_panel is not None:
+            self.preview_panel.wire_recognition_from_monitor_panel(monitor_panel)
 
     def _build_executor_and_model(self, graph_data: dict, monitor_panel) -> Tuple[EditorExecutor, GraphModel]:
-        workspace_path = self._get_workspace_path()
+        workspace_path = self.ui_context.try_get_workspace_path()
+        if workspace_path is None:
+            raise RuntimeError("工作区未就绪：无法创建 EditorExecutor")
         executor: Optional[EditorExecutor] = None
         # 优先复用监控面板中已存在的执行器实例，保持与“检查/定位镜头/拖拽测试”一致的视口状态与缓存
-        if monitor_panel is not None and hasattr(monitor_panel, "get_shared_executor"):
+        if monitor_panel is not None:
             shared = monitor_panel.get_shared_executor()
-            if shared is not None and getattr(shared, "workspace_path", None) == workspace_path:
+            if shared is not None and shared.workspace_path == workspace_path:
                 executor = shared
         if executor is None:
             executor = EditorExecutor(workspace_path)
-        if hasattr(monitor_panel, "set_shared_executor"):
+        if monitor_panel is not None:
             monitor_panel.set_shared_executor(executor)
         graph_model = GraphModel.deserialize(graph_data)
         return executor, graph_model
-
-    def _get_workspace_path(self) -> Path:
-        if self.host.main_window and hasattr(self.host.main_window, 'workspace_path'):
-            return Path(self.host.main_window.workspace_path)
-        current_file = Path(__file__).resolve()
-        return current_file.parent.parent
 
     def _select_task_by_id(self, todo_id: str) -> None:
         item = self._get_item_by_id(todo_id)
@@ -756,14 +602,14 @@ class TodoExecutorBridge(QtCore.QObject):
         优先依赖 `find_template_graph_root_for_todo`，避免在此处重复实现
         “沿树父链 / parent_id 链路向上查找”的第三套逻辑。
         """
-        if not self.tree_manager or not hasattr(self.tree_manager, "find_template_graph_root_for_todo"):
+        if self.tree_manager is None:
             return None
 
         base_todo_id = ""
         if start_item is not None:
             base_todo_id = start_item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if not base_todo_id:
-            base_todo_id = getattr(self.host, "current_todo_id", "") or ""
+            base_todo_id = self.host.current_todo_id or ""
         if not base_todo_id:
             return None
         return self.tree_manager.find_template_graph_root_for_todo(str(base_todo_id))
@@ -772,14 +618,10 @@ class TodoExecutorBridge(QtCore.QObject):
         self.host._notify(message, toast_type)
 
     def _log_to_monitor_or_toast(self, text: str) -> None:
-        monitor_panel = self._ensure_monitor_panel()
+        monitor_panel = self._ensure_monitor_panel(switch_tab=True)
         if monitor_panel is not None:
-            if hasattr(self.host.main_window, 'side_tab'):
-                self.host.main_window.side_tab.setCurrentWidget(monitor_panel)
-            if hasattr(monitor_panel, 'start_monitoring'):
-                monitor_panel.start_monitoring()
-            if hasattr(monitor_panel, 'log'):
-                monitor_panel.log(text)
+            monitor_panel.start_monitoring()
+            monitor_panel.log(text)
         else:
             self._notify(text, "error")
 

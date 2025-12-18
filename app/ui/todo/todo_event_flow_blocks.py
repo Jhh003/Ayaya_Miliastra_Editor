@@ -148,6 +148,9 @@ def create_block_header_item(
     block_index: int,
     group_index: int,
     block_color_hex: str | None = None,
+    *,
+    rich_segments_role: int,
+    marker_role: int,
 ) -> QtWidgets.QTreeWidgetItem:
     """创建只读的“逻辑块分组”树项，用于包裹同一 BasicBlock 内的步骤。
 
@@ -156,13 +159,15 @@ def create_block_header_item(
         group_index: 逻辑分组序号（同一块被多次打断时用于区分组）。
         block_color_hex: 来自图模型 BasicBlock 的颜色（如 "#FF5E9C"），
             若为空则退回为主题的次文本色。
+        rich_segments_role: 任务树富文本 tokens 使用的数据角色（应与委托一致）。
+        marker_role: 用于标记该 item 为“块头”的数据角色（必须与 dimmed_role 分离）。
     """
     header_item = QtWidgets.QTreeWidgetItem()
     header_label = f"逻辑块 {block_index + 1}"
     header_item.setText(0, header_label)
     # 标记为分组头：不对应具体 TodoItem
     header_item.setData(0, Qt.ItemDataRole.UserRole, "")
-    header_item.setData(0, Qt.ItemDataRole.UserRole + 2, "block_header")
+    header_item.setData(0, marker_role, "block_header")
     # 记录块颜色，供高亮与后续样式使用
     if isinstance(block_color_hex, str) and block_color_hex:
         stored_color = block_color_hex
@@ -201,7 +206,6 @@ def create_block_header_item(
             mixed_blue = 255
         return f"#{mixed_red:02X}{mixed_green:02X}{mixed_blue:02X}"
 
-    rich_role = int(Qt.ItemDataRole.UserRole) + 1
     bg_color = _tint_background_color(stored_color)
     header_tokens: List[Dict[str, Any]] = [
         {
@@ -211,7 +215,7 @@ def create_block_header_item(
             "bold": True,
         }
     ]
-    header_item.setData(0, rich_role, header_tokens)
+    header_item.setData(0, int(rich_segments_role), header_tokens)
     return header_item
 
 

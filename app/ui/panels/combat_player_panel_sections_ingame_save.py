@@ -4,13 +4,16 @@ CombatPlayerEditorPanel 拆分模块：局内存档模板绑定与 chip_* 变量
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from engine.resources.definition_schema_view import get_default_definition_schema_view
 from engine.resources.global_resource_view import GlobalResourceView
 from app.ui.foundation.theme_manager import Sizes
+from app.runtime.services import get_shared_json_cache_service
+
+
+_INGAME_SAVE_SELECTION_CACHE_FILE = "player_ingame_save_selection.json"
 
 
 class CombatPlayerPanelSectionsIngameSaveMixin:
@@ -22,81 +25,52 @@ class CombatPlayerPanelSectionsIngameSaveMixin:
     player_ingame_save_summary_label: Any
     player_ingame_save_table: Any
 
-    def _get_ingame_save_selection_store_path(self) -> Optional[Path]:
-        """返回记忆局内存档模板选择的本地状态文件路径。"""
+    def _get_ingame_save_cache_workspace_path(self) -> Optional[Path]:
+        """返回缓存服务的 workspace_path（用于派生 runtime_cache_root）。"""
         if self.resource_manager is None:
             return None
         workspace_path = getattr(self.resource_manager, "workspace_path", None)
         if not isinstance(workspace_path, Path):
             return None
-        cache_directory = workspace_path / "app" / "runtime" / "cache"
-        return cache_directory / "player_ingame_save_selection.json"
+        return workspace_path
 
     def _load_last_selected_ingame_save_template(self) -> str:
         """读取当前玩家模板对应的上次选择的局内存档模板 ID。"""
-        store_path = self._get_ingame_save_selection_store_path()
-        if store_path is None or not store_path.exists():
-            return ""
-
-        serialized_text = store_path.read_text(encoding="utf-8")
-        if not serialized_text.strip():
-            return ""
-
-        payload = json.loads(serialized_text)
-        if not isinstance(payload, dict):
-            return ""
-
-        mapping_value = payload.get("player_template_last_selection")
-        if not isinstance(mapping_value, dict):
-            return ""
-
+        workspace_path = self._get_ingame_save_cache_workspace_path()
         current_template_id = getattr(self, "current_template_id", None)
+        if workspace_path is None:
+            return ""
         if not isinstance(current_template_id, str) or not current_template_id:
             return ""
-
-        stored_value = mapping_value.get(current_template_id)
-        if isinstance(stored_value, str):
-            return stored_value.strip()
-        return ""
+        cache_service = get_shared_json_cache_service(workspace_path)
+        return cache_service.get_kv_str(
+            _INGAME_SAVE_SELECTION_CACHE_FILE,
+            current_template_id,
+            default="",
+        )
 
     def _persist_ingame_save_selection(self, selected_template_id: str) -> None:
-        """将当前玩家模板的局内存档模板选择写入本地状态文件。"""
-        store_path = self._get_ingame_save_selection_store_path()
+        """将当前玩家模板的局内存档模板选择写入运行期缓存（由 JsonCacheService 统一管理）。"""
+        workspace_path = self._get_ingame_save_cache_workspace_path()
         current_template_id = getattr(self, "current_template_id", None)
-        if store_path is None:
+        if workspace_path is None:
             return
         if not isinstance(current_template_id, str) or not current_template_id:
             return
 
-        existing_payload: Dict[str, Any] = {}
-        if store_path.exists():
-            existing_text = store_path.read_text(encoding="utf-8")
-            if existing_text.strip():
-                loaded_payload = json.loads(existing_text)
-                if isinstance(loaded_payload, dict):
-                    existing_payload = loaded_payload
-
-        selection_mapping = existing_payload.get("player_template_last_selection")
-        if not isinstance(selection_mapping, dict):
-            selection_mapping = {}
-
-        if selected_template_id:
-            selection_mapping[current_template_id] = selected_template_id
+        normalized_selected_template_id = selected_template_id.strip()
+        cache_service = get_shared_json_cache_service(workspace_path)
+        if normalized_selected_template_id:
+            cache_service.set_kv_str(
+                _INGAME_SAVE_SELECTION_CACHE_FILE,
+                current_template_id,
+                normalized_selected_template_id,
+            )
         else:
-            if current_template_id in selection_mapping:
-                selection_mapping.pop(current_template_id)
-
-        existing_payload["player_template_last_selection"] = selection_mapping
-        existing_payload["schema_version"] = 1
-
-        store_path.parent.mkdir(parents=True, exist_ok=True)
-        serialized_payload = json.dumps(
-            existing_payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        store_path.write_text(serialized_payload, encoding="utf-8")
+            cache_service.delete_kv_key(
+                _INGAME_SAVE_SELECTION_CACHE_FILE,
+                current_template_id,
+            )
 
     def _load_player_ingame_save_binding(self, forced_template_id: Optional[str] = None) -> None:
         """加载局内存档模板绑定与 chip_* 变量视图。

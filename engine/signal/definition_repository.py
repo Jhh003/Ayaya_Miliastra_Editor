@@ -24,6 +24,17 @@ class SignalDefinitionRepository:
         self._id_by_name: Dict[str, str] | None = None
         self._allowed_params_by_id: Dict[str, Set[str]] | None = None
 
+    def invalidate_cache(self) -> None:
+        """使仓库内派生缓存失效。
+
+        注意：
+        - 该方法不会替换底层 schema view 对象；
+        - 仅清空本仓库基于 schema 聚合得到的二级缓存（payload/name_index/allowed_params）。
+        """
+        self._all_payloads = None
+        self._id_by_name = None
+        self._allowed_params_by_id = None
+
     def get_all_payloads(self) -> Dict[str, Dict[str, Any]]:
         """返回 {signal_id: payload} 的浅拷贝视图（payload 为 dict 副本）。"""
         if self._all_payloads is None:
@@ -107,5 +118,12 @@ def get_default_signal_repository() -> SignalDefinitionRepository:
     if _default_repo is None:
         _default_repo = SignalDefinitionRepository()
     return _default_repo
+
+
+def invalidate_default_signal_repository_cache() -> None:
+    """使进程级默认信号仓库的二级缓存失效。"""
+    global _default_repo
+    if _default_repo is not None:
+        _default_repo.invalidate_cache()
 
 

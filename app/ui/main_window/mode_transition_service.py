@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from app.models.view_modes import ViewMode
+from app.models.edit_session_capabilities import EditSessionCapabilities
 from app.ui.main_window.mode_presenters import ModeEnterRequest
+from engine.utils.logging.logger import log_info
 
 
 @dataclass(slots=True)
@@ -19,121 +21,155 @@ class ModeTransitionRequest:
     mode_string: str
 
 
+class _ModeTransitionHost(Protocol):
+    """ModeTransitionService 依赖的最小主窗口契约（显式接口）。
+
+    说明：
+    - 这里故意只声明“流程编排必须用到”的成员，避免服务随意依赖主窗口的隐式 self.*；
+    - 服务侧只通过这组显式入口完成切换，不依赖主窗口的兼容别名。
+    """
+
+    # 核心 UI/状态对象
+    central_stack: Any
+    main_splitter: Any
+    nav_bar: Any
+    right_panel: Any
+    view_state: Any
+    app_state: Any
+
+    # 编辑上下文（保存/离开时需要）
+    graph_controller: Any
+    composite_widget: Any
+    mode_presenter_coordinator: Any
+
+    # 稳定的公开钩子（避免依赖 _private 方法名）
+    def refresh_save_status_label_for_mode(self, view_mode: ViewMode) -> None: ...
+    def schedule_ui_session_state_save(self) -> None: ...
+    def save_current_composite_if_needed(self) -> None: ...
+
+
 class ModeTransitionService:
     """封装主窗口模式切换公共流程。"""
 
-    def transition(self, main_window: Any, request: ModeTransitionRequest) -> None:
-        mode = request.mode_string
-
-        print(f"\n[模式切换] 从当前模式切换到: {mode}")
-        print(f"[模式切换] current_graph_id: {main_window.graph_controller.current_graph_id}")
-        print(f"[模式切换] current_graph_container: {main_window.graph_controller.current_graph_container}")
-
+    def transition(self, main_window: _ModeTransitionHost, request: ModeTransitionRequest) -> None:
+        mode_string = request.mode_string
         current_mode = ViewMode.from_index(main_window.central_stack.currentIndex())
-        print(f"[模式切换] 当前模式: {current_mode}")
 
-        # 1) 离开复合节点：保存当前复合节点
+        log_info(
+            "[MODE] transition start: from={} to={} graph_id={} dirty={}",
+            current_mode,
+            mode_string,
+            getattr(main_window.graph_controller, "current_graph_id", None),
+            getattr(main_window.graph_controller, "is_dirty", None),
+        )
+
+        # 1) 离开复合节点：保存当前复合节点（若存在选中）
         if current_mode == ViewMode.COMPOSITE:
-            composite_mgr = getattr(main_window, "composite_widget", None)
-            current_comp_id = (
-                getattr(composite_mgr, "current_composite_id", None) if composite_mgr else None
-            )
-            if current_comp_id:
-                print(f"[模式切换] 保存复合节点: {current_comp_id}")
-                composite_mgr._save_current_composite()
+            main_window.save_current_composite_if_needed()
 
         # 2) 离开节点图编辑：如有脏则保存
-        if main_window.graph_controller.current_graph_id:
-            if main_window.graph_controller.is_dirty:
-                print("[模式切换] 检测到未保存修改，触发保存节点图...")
-                main_window.graph_controller.save_current_graph()
-            else:
-                print("[模式切换] 节点图无修改，跳过保存")
-        else:
-            print("[模式切换] 跳过保存（无current_graph_id）")
+        current_graph_identifier = getattr(main_window.graph_controller, "current_graph_id", "")
+        if current_graph_identifier and getattr(main_window.graph_controller, "is_dirty", False):
+            log_info("[MODE] saving dirty graph before leaving: {}", current_graph_identifier)
+            main_window.graph_controller.save_current_graph()
 
-        # 3) 解析目标模式
-        view_mode = ViewMode.from_string(mode)
-        if view_mode is None:
-            print(f"[模式切换] 警告：未知模式 {mode}")
-            return
+        # 3) 解析目标模式（非法输入直接抛错更利于定位）
+        target_view_mode = ViewMode.from_string(mode_string)
+        if target_view_mode is None:
+            raise ValueError(f"未知模式: {mode_string!r}")
+
+        # 3.5) TODO 模式的“全局画布只读化”：
+        # - 进入 TODO：将 GraphEditorController 统一切到只读预览能力，确保任务清单预览不可编辑；
+        # - 离开 TODO：恢复进入前的能力快照，避免切回编辑器后仍卡在只读。
+        if target_view_mode == ViewMode.TODO and current_mode != ViewMode.TODO:
+            previous_capabilities = getattr(main_window.graph_controller, "edit_session_capabilities", None)
+            setattr(main_window, "_graph_capabilities_before_todo", previous_capabilities)
+            main_window.graph_controller.set_edit_session_capabilities(EditSessionCapabilities.read_only_preview())
+        elif current_mode == ViewMode.TODO and target_view_mode != ViewMode.TODO:
+            previous_capabilities = getattr(main_window, "_graph_capabilities_before_todo", None)
+            if isinstance(previous_capabilities, EditSessionCapabilities):
+                main_window.graph_controller.set_edit_session_capabilities(previous_capabilities)
 
         # 4) ViewState 记录模式切换（单一真源）
-        view_state = getattr(main_window, "view_state", None)
-        set_mode = getattr(view_state, "set_mode", None)
-        if callable(set_mode):
-            set_mode(current=view_mode, previous=current_mode or view_mode)
+        main_window.view_state.set_mode(
+            current=target_view_mode,
+            previous=current_mode or target_view_mode,
+        )
 
-        # 5) 同步左侧导航高亮
-        main_window._sync_nav_highlight_for_mode(view_mode)
+        # 5) 同步左侧导航高亮（图编辑器借用“节点图库”作为锚点）
+        nav_mode_string = target_view_mode.to_string()
+        if target_view_mode == ViewMode.GRAPH_EDITOR:
+            nav_mode_string = "graph_library"
+        main_window.nav_bar.set_current_mode(nav_mode_string)
 
         # 6) 切换中央堆栈
-        main_window.central_stack.setCurrentIndex(view_mode.value)
+        main_window.central_stack.setCurrentIndex(target_view_mode.value)
 
         # 7) 调整左右分割器比例（TODO 模式特殊）
-        if hasattr(main_window, "main_splitter"):
-            if view_mode == ViewMode.TODO:
-                main_window.main_splitter.setSizes([1600, 400])
-            else:
-                main_window.main_splitter.setSizes([1200, 800])
+        if target_view_mode == ViewMode.TODO:
+            main_window.main_splitter.setSizes([1600, 400])
+        else:
+            main_window.main_splitter.setSizes([1200, 800])
 
-        # 8) 进入模式副作用（presenter）
-        previous_mode = current_mode or view_mode
-        preferred_tab_id = None
-        coordinator = getattr(main_window, "mode_presenter_coordinator", None)
-        enter_method = getattr(coordinator, "enter_mode", None)
-        if callable(enter_method):
-            preferred_tab_id = enter_method(
-                ModeEnterRequest(view_mode=view_mode, previous_mode=previous_mode)
-            )
+        # 8) 进入模式前：统一收敛右侧面板默认态（避免跨模式残留“允许但不该默认展示”的标签）
+        main_window.right_panel.prepare_for_mode_enter(target_view_mode)
 
-        # 9) 应用右侧静态标签配置 + 切到 preferred
-        main_window._apply_right_tabs_for_mode(view_mode)
+        # 9) 进入模式副作用（presenter）
+        previous_mode = current_mode or target_view_mode
+        preferred_tab_id = main_window.mode_presenter_coordinator.enter_mode(
+            ModeEnterRequest(view_mode=target_view_mode, previous_mode=previous_mode)
+        )
+
+        # 10) 应用右侧静态标签配置 + 切到 preferred
+        main_window.right_panel.apply_for_mode(target_view_mode)
         if preferred_tab_id:
-            main_window.right_panel_registry.switch_to(preferred_tab_id)
+            main_window.right_panel.switch_to(preferred_tab_id)
 
-        # 10) 收敛右侧标签与可见性
-        main_window._enforce_right_panel_contract(view_mode)
-        main_window._switch_to_first_visible_tab()
-        main_window._update_right_panel_visibility()
+        # 11) 收敛右侧标签与可见性
+        main_window.right_panel.enforce_contract(target_view_mode)
+        main_window.right_panel.switch_to_first_visible_tab()
+        main_window.right_panel.update_visibility()
 
-        # 11) 调试输出
+        # 12) 调试输出（高层快照）
         central_index = main_window.central_stack.currentIndex()
         central_mode = ViewMode.from_index(central_index)
-        central_is_graph_view = (main_window.central_stack.currentWidget() is main_window.view)
+        central_is_graph_view = (
+            main_window.central_stack.currentWidget() is main_window.app_state.graph_view
+        )
 
         nav_current = None
-        if hasattr(main_window, "nav_bar") and hasattr(main_window.nav_bar, "buttons"):
-            for mode_key, button in main_window.nav_bar.buttons.items():
-                if button.isChecked():
+        nav_buttons = getattr(main_window.nav_bar, "buttons", None)
+        if isinstance(nav_buttons, dict):
+            for mode_key, button in nav_buttons.items():
+                if getattr(button, "isChecked", lambda: False)():
                     nav_current = mode_key
                     break
 
-        if hasattr(main_window, "side_tab"):
-            side_count = main_window.side_tab.count()
-            side_titles = [main_window.side_tab.tabText(i) for i in range(side_count)]
+        side_tab = getattr(main_window, "side_tab", None)
+        if side_tab is not None and hasattr(side_tab, "count"):
+            side_count = side_tab.count()
+            side_titles = [side_tab.tabText(i) for i in range(side_count)]
             current_side_title = (
-                main_window.side_tab.tabText(main_window.side_tab.currentIndex())
-                if side_count > 0
-                else "<none>"
+                side_tab.tabText(side_tab.currentIndex()) if side_count > 0 else "<none>"
             )
         else:
             side_count = 0
             side_titles = []
             current_side_title = "<none>"
 
-        print(
-            f"[MODE-STATE] nav={nav_current} | central={{index:{central_index}, mode:{central_mode}, is_graph_view:{central_is_graph_view}}} | "
-            f"side={{count:{side_count}, current:'{current_side_title}', tabs:{side_titles}}}"
+        log_info(
+            "[MODE-STATE] nav={} | central={{index:{}, mode:{}, is_graph_view:{}}} | side={{count:{}, current:'{}', tabs:{}}}",
+            nav_current,
+            central_index,
+            central_mode,
+            central_is_graph_view,
+            side_count,
+            current_side_title,
+            side_titles,
         )
 
-        # 12) 保存状态提示与会话快照
-        refresh_label = getattr(main_window, "_refresh_save_status_label_for_mode", None)
-        if callable(refresh_label):
-            refresh_label(view_mode)
-
-        schedule_save = getattr(main_window, "_schedule_ui_session_state_save", None)
-        if callable(schedule_save):
-            schedule_save()
+        # 13) 保存状态提示与会话快照（稳定公开钩子）
+        main_window.refresh_save_status_label_for_mode(target_view_mode)
+        main_window.schedule_ui_session_state_save()
 
 

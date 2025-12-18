@@ -1,20 +1,26 @@
 """
-检测 core/configs 目录下的重复类名
+检测 `engine/configs` 目录下的重复类名。
 
-扫描所有 Python 文件，找出跨模块的同名类定义（可能导致命名冲突）。
+当前仓库以 `engine/configs` 作为唯一配置模型来源。
+本脚本扫描目标目录下的 Python 文件，找出跨模块的同名类定义（可能导致导入歧义或认知冲突）。
+
+用法（推荐）：
+  python -X utf8 -m tools.check_duplicate_config_names
 """
 
-import os
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Tuple, Optional, Sequence
+import argparse
 
-# 项目根目录
-PROJECT_ROOT = Path(__file__).parent.parent
+# 允许 `python tools/check_duplicate_config_names.py` 与 `python -m tools.check_duplicate_config_names`
+if __package__:
+    from ._bootstrap import ensure_workspace_root_on_sys_path, get_workspace_root
+else:
+    from _bootstrap import ensure_workspace_root_on_sys_path, get_workspace_root
 
-# 需要检查的目录
-CONFIG_DIR = PROJECT_ROOT / "core" / "configs"
+ensure_workspace_root_on_sys_path()
 
 # 需要忽略的文件
 IGNORE_FILES = {
@@ -49,7 +55,7 @@ def extract_class_definitions(file_path: Path) -> List[Tuple[str, int]]:
     return class_definitions
 
 
-def scan_config_directory() -> Dict[str, List[Tuple[str, int]]]:
+def scan_config_directory(project_root: Path, config_dir: Path) -> Dict[str, List[Tuple[str, int]]]:
     """
     扫描配置目录，收集所有类定义
     
@@ -57,18 +63,19 @@ def scan_config_directory() -> Dict[str, List[Tuple[str, int]]]:
     """
     file_classes = {}
     
-    for root, dirs, files in os.walk(CONFIG_DIR):
-        # 排除 __pycache__
-        dirs[:] = [d for d in dirs if d not in IGNORE_FILES]
-        
-        for file in files:
-            if file.endswith('.py') and file not in IGNORE_FILES:
-                file_path = Path(root) / file
-                classes = extract_class_definitions(file_path)
-                if classes:
-                    # 相对于项目根目录的路径
-                    rel_path = file_path.relative_to(PROJECT_ROOT)
-                    file_classes[str(rel_path)] = classes
+    if not config_dir.exists():
+        raise SystemExit(f"[ERROR] 目标目录不存在：{config_dir}（请确认仓库结构或使用 --config-dir 指定）")
+
+    for file_path in config_dir.rglob("*.py"):
+        if file_path.name in IGNORE_FILES:
+            continue
+        # 忽略 __pycache__ 子目录
+        if "__pycache__" in file_path.parts:
+            continue
+        classes = extract_class_definitions(file_path)
+        if classes:
+            rel_path = file_path.relative_to(project_root)
+            file_classes[str(rel_path)] = classes
     
     return file_classes
 
@@ -134,25 +141,47 @@ def format_duplicate_report(duplicates: Dict[str, List[Tuple[str, int]]]) -> str
     return "\n".join(lines)
 
 
-def main():
+def main(argv: Optional[Sequence[str]] = None) -> int:
     """主函数"""
-    print("正在扫描 core/configs 目录...")
-    file_classes = scan_config_directory()
+    parser = argparse.ArgumentParser(description="检测 engine/configs 下的重复类名")
+    parser.add_argument("--root", type=str, default="", help="仓库根目录（默认自动推导）")
+    parser.add_argument(
+        "--config-dir",
+        type=str,
+        default="engine/configs",
+        help="相对仓库根目录的配置目录（默认 engine/configs）",
+    )
+    parser.add_argument(
+        "--fail-on-duplicates",
+        action="store_true",
+        help="发现重复类名时返回非零退出码（用于 CI/强约束场景；默认仅输出报告不失败）",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    project_root = Path(args.root).resolve() if args.root else get_workspace_root()
+    config_dir = (project_root / str(args.config_dir)).resolve()
+
+    print(f"正在扫描 {config_dir} ...")
+    file_classes = scan_config_directory(project_root, config_dir)
     
     total_files = len(file_classes)
     total_classes = sum(len(classes) for classes in file_classes.values())
     print(f"扫描完成：{total_files} 个文件，{total_classes} 个类定义")
+
+    if total_files == 0:
+        raise SystemExit(f"[ERROR] 扫描到 0 个 Python 文件：{config_dir}（脚本可能仍指向旧目录）")
     print()
     
     duplicates = find_duplicate_classes(file_classes)
     report = format_duplicate_report(duplicates)
     print(report)
     
-    # 返回状态码
-    return len(duplicates)
+    # 返回状态码：默认仅输出报告不失败（便于在团队尚未收敛命名时也能接入 CI 做“不会崩”的守护）
+    if bool(args.fail_on_duplicates) and len(duplicates) > 0:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    exit_code = main()
-    exit(0 if exit_code == 0 else 1)
+    raise SystemExit(main())
 

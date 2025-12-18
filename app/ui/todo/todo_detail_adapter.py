@@ -4,7 +4,7 @@ from __future__ import annotations
 Todo 详情数据适配器
 
 职责：
-- 为 TodoDetailRenderer 提供所需的数据收集接口，解耦 UI 主组件中的统计/汇总逻辑。
+- 为 TodoDetailBuilder 提供所需的数据收集接口，解耦 UI 主组件中的统计/汇总逻辑。
 
 说明：
 - 依赖传入的 widget 访问 todo_map 等运行时数据，但不直接操作 UI 控件。
@@ -127,12 +127,8 @@ class TodoDetailAdapter:
                 graph_id = str(item_info.get("graph_id", "") or child_todo.target_id or "")
                 graph_name = str(item_info.get("graph_name", "") or child_todo.title)
 
-                # 尝试从宿主详情面板/列表组件获取资源管理器（由主窗口注入），避免在此处直接依赖 MainWindow 结构
-                resource_manager = getattr(self.widget, "resource_manager", None)
-                if resource_manager is None and getattr(self.widget, "host_list_widget", None) is not None:
-                    host = self.widget.host_list_widget
-                    if hasattr(host, "resource_manager"):
-                        resource_manager = host.resource_manager
+                # 资源管理器由宿主注入到详情面板（TodoDetailPanel.resource_manager）
+                resource_manager = self.widget.resource_manager
 
                 variable_count = 0
                 node_count = 0

@@ -44,7 +44,7 @@ from app.ui.main_window.right_panel_registry import RightPanelRegistry
 class StackPageSpec:
     """描述中央堆叠中的页面构建与后置处理。"""
 
-    attribute_name: str
+    attribute_name: str | None
     builder: Callable[[], QtWidgets.QWidget]
     after_create: Callable[[QtWidgets.QWidget], None] | None = None
 
@@ -109,7 +109,8 @@ class UISetupMixin:
         self.central_stack = QtWidgets.QStackedWidget()
         for page_spec in self._central_page_specs():
             page_widget = page_spec.builder()
-            setattr(self, page_spec.attribute_name, page_widget)
+            if page_spec.attribute_name:
+                setattr(self, page_spec.attribute_name, page_widget)
             self.central_stack.addWidget(page_widget)
             if page_spec.after_create is not None:
                 page_spec.after_create(page_widget)
@@ -125,7 +126,8 @@ class UISetupMixin:
             StackPageSpec("_composite_placeholder", self._create_composite_placeholder_page),
             StackPageSpec("graph_library_widget", self._create_graph_library_page),
             StackPageSpec("validation_panel", self._create_validation_page),
-            StackPageSpec("view", self._create_graph_editor_page),
+            # 节点图编辑器视图由 AppState 持有，不在主窗口上再暴露兼容别名（避免多真源）。
+            StackPageSpec("graph_editor_canvas_host", self._create_graph_editor_page),
             StackPageSpec("package_library_widget", self._create_package_library_page),
         )
 
@@ -162,7 +164,10 @@ class UISetupMixin:
 
     def _create_graph_library_page(self) -> GraphLibraryWidget:
         """节点图库页面（ViewMode.GRAPH_LIBRARY）。"""
-        graph_library_widget = GraphLibraryWidget(self.resource_manager, self.package_index_manager)
+        graph_library_widget = GraphLibraryWidget(
+            self.app_state.resource_manager,
+            self.app_state.package_index_manager,
+        )
         return graph_library_widget
 
     def _create_validation_page(self) -> ValidationPanel:
@@ -171,11 +176,22 @@ class UISetupMixin:
         validation_panel.setMinimumWidth(600)
         return validation_panel
 
-    def _create_graph_editor_page(self) -> GraphView:
-        """节点图编辑页面（ViewMode.GRAPH_EDITOR）。"""
-        self.view.setMinimumWidth(400)
+    def _create_graph_editor_page(self) -> QtWidgets.QWidget:
+        """节点图编辑页面（ViewMode.GRAPH_EDITOR）。
 
-        self.graph_editor_todo_button = QtWidgets.QPushButton("前往执行", self.view)
+        注意：中央堆叠页使用“Host 容器”承载全局唯一的 `app_state.graph_view`，
+        以便同一张画布可以在 TODO 预览与编辑器之间移动复用。
+        """
+        from app.ui.graph.graph_canvas_host import GraphCanvasHost
+
+        graph_view = self.app_state.graph_view
+        graph_view.setMinimumWidth(400)
+
+        host = GraphCanvasHost()
+        host.setObjectName("graphEditorCanvasHost")
+        host.attach_view(graph_view)
+
+        self.graph_editor_todo_button = QtWidgets.QPushButton("前往执行", graph_view)
         self.graph_editor_todo_button.setObjectName("graphEditorTodoButton")
         self.graph_editor_todo_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
         self.graph_editor_todo_button.setStyleSheet(
@@ -204,12 +220,15 @@ class UISetupMixin:
         self.graph_editor_todo_button.setToolTip("前往任务清单并定位/生成当前图对应的执行步骤")
         self.graph_editor_todo_button.setVisible(False)
         self.graph_editor_todo_button.clicked.connect(self._on_graph_editor_execute_from_todo)
-        self.view.set_extra_top_right_button(self.graph_editor_todo_button)
-        return self.view
+        graph_view.set_extra_top_right_button(self.graph_editor_todo_button)
+        return host
 
     def _create_package_library_page(self) -> PackageLibraryWidget:
         """存档页面（ViewMode.PACKAGES）。"""
-        package_library_widget = PackageLibraryWidget(self.resource_manager, self.package_index_manager)
+        package_library_widget = PackageLibraryWidget(
+            self.app_state.resource_manager,
+            self.app_state.package_index_manager,
+        )
         return package_library_widget
 
     def _create_right_panel_container(self) -> None:
@@ -223,7 +242,6 @@ class UISetupMixin:
 
         self.side_tab = QtWidgets.QTabWidget(self.right_panel_container)
         self.side_tab.setObjectName("sideTab")
-        self.side_tab.addTab(self.property_panel, "属性")
         right_panel_layout.addWidget(self.side_tab, 1)
 
         self.right_panel_container.setStyleSheet(ThemeManager.right_side_tab_style())
@@ -239,8 +257,12 @@ class UISetupMixin:
         # 安装主窗口 Feature（渐进迁移的单点扩展口）
         self._install_main_window_features()
 
+        # 初始状态下可能没有任何可见 tab：统一由 RightPanelRegistry 决定容器可见性。
+        self.right_panel_registry.update_visibility()
+
         self.right_panel_container.setMinimumWidth(350)
-        self.right_panel_container.setMaximumWidth(800)
+        # 右侧属性面板允许更宽：部分表格/多列编辑面板在窄宽度下可用性较差。
+        self.right_panel_container.setMaximumWidth(1200)
 
     def _install_main_window_features(self) -> None:
         """安装默认主窗口 Feature 集合。
@@ -259,43 +281,46 @@ class UISetupMixin:
             EquipmentTagManagementPanel,
             EquipmentTypeManagementPanel,
         )
-        self.property_panel = TemplateInstancePanel(self.resource_manager, self.package_index_manager)
+        resource_manager = self.app_state.resource_manager
+        package_index_manager = self.app_state.package_index_manager
+
+        self.property_panel = TemplateInstancePanel(resource_manager, package_index_manager)
         self.property_panel.setMinimumWidth(300)
 
         # 玩家模板详情面板（战斗预设专用，具体挂载到 side_tab 由模式切换逻辑控制）
         self.player_editor_panel = CombatPlayerEditorPanel(
-            self.resource_manager,
-            self.package_index_manager,
+            resource_manager,
+            package_index_manager,
             self.right_panel_container,
         )
 
         # 职业详情面板（战斗预设-职业）
         self.player_class_panel = CombatPlayerClassPanel(
-            self.resource_manager,
-            self.package_index_manager,
+            resource_manager,
+            package_index_manager,
             self.right_panel_container,
         )
 
         # 技能详情面板（战斗预设-技能）
         self.skill_panel = CombatSkillPanel(
-            self.resource_manager,
-            self.package_index_manager,
+            resource_manager,
+            package_index_manager,
             self.right_panel_container,
         )
         self.skill_panel.setMinimumWidth(360)
 
         # 道具详情面板（战斗预设-道具）
         self.item_panel = CombatItemPanel(
-            self.resource_manager,
-            self.package_index_manager,
+            resource_manager,
+            package_index_manager,
             self.right_panel_container,
         )
         self.item_panel.setMinimumWidth(360)
 
-        self.graph_property_panel = GraphPropertyPanel(self.resource_manager, self.package_index_manager)
+        self.graph_property_panel = GraphPropertyPanel(resource_manager, package_index_manager)
         self.graph_property_panel.setMinimumWidth(300)
 
-        self.composite_property_panel = CompositeNodePropertyPanel(self.package_index_manager)
+        self.composite_property_panel = CompositeNodePropertyPanel(package_index_manager)
         self.composite_property_panel.setMinimumWidth(300)
 
         self.composite_pin_panel = CompositeNodePinPanel()
@@ -361,8 +386,7 @@ class UISetupMixin:
         self.dev_tools_action = QtGui.QAction("开发者工具（悬停显示控件）", self)
         self.dev_tools_action.setShortcut("F12")
         self.dev_tools_action.setCheckable(True)
-        if hasattr(self, "_on_dev_tools_toggled"):
-            self.dev_tools_action.toggled.connect(self._on_dev_tools_toggled)
+        self.dev_tools_action.toggled.connect(self._on_dev_tools_toggled)
         self.addAction(self.dev_tools_action)
 
     def _setup_toolbar(self) -> None:
@@ -390,19 +414,15 @@ class UISetupMixin:
 
         toolbar.addSeparator()
 
-        # 设置 / 更新 / 重启按钮组
+        # 设置 / 刷新 / 重启按钮组
         settings_action = QtGui.QAction("⚙️ 设置", self)
         settings_action.setToolTip("打开程序设置")
         settings_action.triggered.connect(self._open_settings_dialog)
         toolbar.addAction(settings_action)
 
-        update_action = QtGui.QAction("更新", self)
+        update_action = QtGui.QAction("刷新", self)
         update_action.setToolTip("刷新资源库（当外部工具修改节点图、管理配置等资源时手动触发）")
-        if hasattr(self, "_on_manual_refresh_resource_library"):
-            update_action.triggered.connect(self._on_manual_refresh_resource_library)
-        else:
-            # 回退：直接调用主窗口统一的资源库刷新入口（若存在）
-            update_action.triggered.connect(getattr(self, "refresh_resource_library", lambda: None))
+        update_action.triggered.connect(self._on_manual_refresh_resource_library)
         toolbar.addAction(update_action)
 
         restart_action = QtGui.QAction("重启", self)

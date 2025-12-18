@@ -62,31 +62,6 @@ def ask_acknowledge_or_suppress_dialog(
     return message_box.clickedButton() is suppress_button
 
 
-def prompt_text(
-    parent: QtWidgets.QWidget | None,
-    title: str,
-    label: str,
-    *,
-    placeholder: str = "",
-    text: str = "",
-) -> str | None:
-    """统一的单文本输入对话框辅助函数（兼容旧入口，实际委托给 `input_dialogs.prompt_text`）。
-
-    为了避免在多个模块中复制 FormDialog 构建逻辑，这里仅作为薄封装：
-    - 样式与行为由 `ui.foundation.input_dialogs.prompt_text` 决定；
-    - 推荐新代码从 `ui.foundation` 顶层导入 `prompt_text` / `prompt_item` / `prompt_int`。
-    """
-    from app.ui.foundation.input_dialogs import prompt_text as _prompt_text
-
-    return _prompt_text(
-        parent,
-        title,
-        label,
-        placeholder=placeholder,
-        text=text,
-    )
-
-
 def apply_standard_button_box_labels(button_box: QtWidgets.QDialogButtonBox) -> None:
     """统一将标准 Ok/Cancel 按钮的文本替换为中文文案。
 
@@ -106,7 +81,6 @@ __all__ = [
     "apply_standard_button_box_labels",
     "ask_acknowledge_or_suppress_dialog",
     "ask_yes_no_dialog",
-    "prompt_text",
     "show_error_dialog",
     "show_info_dialog",
     "show_warning_dialog",

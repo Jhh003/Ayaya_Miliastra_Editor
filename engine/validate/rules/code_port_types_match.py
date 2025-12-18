@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from ..context import ValidationContext
 from ..issue import EngineIssue
 from ..pipeline import ValidationRule
-from .ast_utils import get_cached_module, line_span_text
+from .ast_utils import get_cached_module, infer_graph_scope, line_span_text
 from .node_index import (
     node_function_names,
     input_types_by_func,
@@ -46,11 +46,12 @@ class PortTypesMatchRule(ValidationRule):
 
         file_path: Path = ctx.file_path
         tree = get_cached_module(ctx)
-        func_names = node_function_names(ctx.workspace_path)
-        in_types = input_types_by_func(ctx.workspace_path)
-        out_types = output_types_by_func(ctx.workspace_path)
-        in_constraints = input_generic_constraints_by_func(ctx.workspace_path)
-        enum_options = input_enum_options_by_func(ctx.workspace_path)
+        scope = infer_graph_scope(ctx)
+        func_names = node_function_names(ctx.workspace_path, scope)
+        in_types = input_types_by_func(ctx.workspace_path, scope)
+        out_types = output_types_by_func(ctx.workspace_path, scope)
+        in_constraints = input_generic_constraints_by_func(ctx.workspace_path, scope)
+        enum_options = input_enum_options_by_func(ctx.workspace_path, scope)
 
         issues: List[EngineIssue] = []
 

@@ -15,8 +15,10 @@ from engine.graph.composite.pin_api import (
     数据出,
 )
 from .game_state import GameRuntime
+from .node_graph_validator import validate_node_graph
 
-# 注：上面的 `from plugins.nodes.server import *` 会把所有节点函数的类型桩透出到当前模块，
-# 与实际运行时的 `graph_prelude_server.py` 行为保持一致，从而避免“函数名标黄”等提示。
+# 注：
+# - 上面的 `from plugins.nodes.server import *` 仅用于“类型层”的全量符号导出（来自 .pyi 类型桩）；
+# - 实际运行时的节点函数导出由 `graph_prelude_server.py` 通过 V2 AST 清单加载实现并注入 globals() 完成。
 
 

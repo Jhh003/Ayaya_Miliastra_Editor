@@ -46,25 +46,12 @@ class NodeDef:
 
         作用域判定优先级：
         1. 若 scopes 非空：仅当 scope 在 scopes 中时可用；
-        2. 若 scopes 为空：
-           - 若 doc_reference 中包含 \"服务器节点/\"，视为 server 节点；
-           - 若 doc_reference 中包含 \"客户端节点/\"，视为 client 节点；
-           - 若二者都不包含，则视为通用节点（在所有受支持作用域中均可用）。
+        2. 若 scopes 为空：视为通用节点（在所有受支持作用域中均可用）。
         """
         if self.scopes:
             return scope in self.scopes
-        
-        doc_path = str(self.doc_reference or "")
-        inferred_scopes: List[str] = []
-        if "服务器节点/" in doc_path:
-            inferred_scopes.append("server")
-        if "客户端节点/" in doc_path:
-            inferred_scopes.append("client")
-        
-        if inferred_scopes:
-            return scope in inferred_scopes
-        
-        # 没有显式 scopes，且文档路径无法推断作用域时，默认视为通用节点
+
+        # 没有显式 scopes 时，默认视为通用节点
         return scope in ALLOWED_SCOPES
     
     def get_port_type(self, port_name: str, is_input: bool) -> str:

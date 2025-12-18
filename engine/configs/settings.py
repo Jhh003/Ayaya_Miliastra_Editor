@@ -212,6 +212,14 @@ class Settings:
     # 是否在每个真实执行步骤完成后，尝试在节点图画布上点击一次空白位置作为收尾
     # True：默认启用（推荐），可以关闭以完全保留旧行为并略微降低截图/识别开销
     REAL_EXEC_CLICK_BLANK_AFTER_STEP: bool = True
+
+    # === 自动化回放记录（关键步骤 I/O 记录）===
+    # 是否启用自动化“关键步骤输入输出记录”（JSONL + 可选截图），用于回归定位与离线复现。
+    REAL_EXEC_REPLAY_RECORDING_ENABLED: bool = False
+    # 是否在回放记录中额外落盘步骤前后截图（更直观，但有额外 IO 开销）。
+    REAL_EXEC_REPLAY_CAPTURE_SCREENSHOTS: bool = False
+    # 是否记录所有步骤（默认只记录计划表中标记为关键的步骤）。
+    REAL_EXEC_REPLAY_RECORD_ALL_STEPS: bool = False
     
     # 鼠标执行模式：
     # "classic"：直接移动并点击/拖拽（保持最终光标在目标位置）
@@ -380,6 +388,9 @@ class Settings:
         cls.TODO_GRAPH_STEP_MODE = "human"
         cls.REAL_EXEC_VERBOSE = False
         cls.REAL_EXEC_CLICK_BLANK_AFTER_STEP = True
+        cls.REAL_EXEC_REPLAY_RECORDING_ENABLED = False
+        cls.REAL_EXEC_REPLAY_CAPTURE_SCREENSHOTS = False
+        cls.REAL_EXEC_REPLAY_RECORD_ALL_STEPS = False
         cls.MOUSE_EXECUTION_MODE = "classic"
         cls.MOUSE_HYBRID_STEPS = 40
         cls.MOUSE_HYBRID_STEP_SLEEP = 0.008

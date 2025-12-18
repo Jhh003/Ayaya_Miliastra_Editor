@@ -32,12 +32,16 @@ class SignalBindingService:
         return str(signal_id)
 
     def set_node_signal_id(self, model: GraphModel, node_id: str, signal_id: str) -> None:
-        """为指定节点写入信号绑定（覆盖旧值）。"""
-        bindings_raw = model.metadata.get("signal_bindings")
-        if not isinstance(bindings_raw, dict):
-            bindings_raw = {}
-            model.metadata["signal_bindings"] = bindings_raw
-        bindings_raw[str(node_id)] = {"signal_id": str(signal_id)}
+        """已弃用：不要在服务层直接写入 metadata["signal_bindings"]。
+
+        signal_bindings 必须由 `engine.graph.semantic.GraphSemanticPass` 在明确阶段覆盖式生成。
+        若需要在 UI/工具层设置绑定，请改为写入节点本体：
+        - `node.input_constants["信号名"]`（用于展示）
+        - `node.input_constants["__signal_id"]`（稳定 ID）
+        然后触发一次 GraphSemanticPass。
+        """
+        _ = (model, node_id, signal_id)
+        raise ValueError("禁止直接写入 metadata['signal_bindings']，请使用 GraphSemanticPass")
 
     def collect_graph_usage(
         self,

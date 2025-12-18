@@ -20,6 +20,7 @@ from .flow_utils import (
 from .local_var_builder import (
     should_model_as_local_var,
     build_local_var_nodes,
+    LOCAL_HANDLE_PREFIX,
 )
 from .statement_flow_builder import (
     handle_if_statement,
@@ -263,8 +264,14 @@ def parse_method_body(
         )
 
     # 预扫描方法体内“命名常量”赋值：供后续节点调用参数引用时回填为 input_constants。
-    # 约定：仅收集 target 为 Name 且右值可静态提取的赋值（Assign / AnnAssign）。
-    env.local_const_values.clear()
+    #
+    # 重要：parse_method_body 会被递归用于 if/match/for 的分支体解析。
+    # 若在递归入口清空 local_const_values，会导致“外层已声明的命名常量”在分支体内失效，
+    # 从而出现节点输入端口无法回填常量、进而触发“缺少数据来源”的结构误报。
+    #
+    # 因此这里不清空已有常量，而是在当前作用域基础上增量补充/覆盖：
+    # - 外层常量在分支体内仍可被引用；
+    # - 分支体内新增/覆盖的常量在该次解析过程中可用。
     method_module = ast.Module(body=list(body or []), type_ignores=[])
     for stmt in ast.walk(method_module):
         if isinstance(stmt, ast.Assign):
@@ -321,6 +328,45 @@ def parse_method_body(
         isinstance(prev_flow_node, list) and any(isinstance(x, tuple) for x in prev_flow_node)
     )
 
+    def _iter_assigned_target_names(target_expr: object) -> List[str]:
+        """提取赋值目标中的变量名（仅 Name 与 Tuple 展开）。"""
+        names: List[str] = []
+        if isinstance(target_expr, ast.Name):
+            if isinstance(target_expr.id, str) and target_expr.id:
+                names.append(target_expr.id)
+        elif isinstance(target_expr, ast.Tuple):
+            for element in list(target_expr.elts or []):
+                names.extend(_iter_assigned_target_names(element))
+        return names
+
+    def _should_bypass_alias_assignment(value_expr: ast.expr, targets_obj: object) -> bool:
+        """在需要局部变量建模的场景下，禁止“别名赋值快速路径”。
+
+        背景：
+        - flow_utils.handle_alias_assignment 会把 `目标 = 源变量` 直接改写为 env 映射并跳过建模；
+        - 但当目标变量处于“多分支合流/已有局部变量句柄”模式时，跳过会导致：
+          - 某个分支生成了【获取局部变量】（作为合流容器）
+          - 另一个分支用别名赋值被跳过，未生成【设置局部变量】
+          - 最终图中出现“获取局部变量但没有设置”的异常状态，且合流语义可能错误。
+        """
+        if not isinstance(value_expr, ast.Name):
+            return False
+
+        assigned_names: List[str] = []
+        if isinstance(targets_obj, list):
+            for t in targets_obj:
+                assigned_names.extend(_iter_assigned_target_names(t))
+        else:
+            assigned_names.extend(_iter_assigned_target_names(targets_obj))
+
+        for name in assigned_names:
+            if env.is_multi_assign_candidate(name):
+                return True
+            handle_key = f"{LOCAL_HANDLE_PREFIX}{name}"
+            if env.get_variable(handle_key) is not None:
+                return True
+        return False
+
     for stmt_index, stmt in enumerate(body):
         # 表达式语句：节点调用
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
@@ -355,7 +401,9 @@ def parse_method_body(
         # 赋值语句
         elif isinstance(stmt, ast.Assign):
             # 处理纯别名赋值
-            if handle_alias_assignment(stmt.value, stmt.targets, env):
+            if (not _should_bypass_alias_assignment(stmt.value, stmt.targets)) and handle_alias_assignment(
+                stmt.value, stmt.targets, env
+            ):
                 continue
             
             # 发出字面量赋值警告
@@ -449,7 +497,9 @@ def parse_method_body(
             if stmt.value is None:
                 continue
             # 处理纯别名赋值
-            if handle_alias_assignment(stmt.value, stmt.target, env):
+            if (not _should_bypass_alias_assignment(stmt.value, stmt.target)) and handle_alias_assignment(
+                stmt.value, stmt.target, env
+            ):
                 continue
 
             # 单变量注解赋值优先尝试局部变量建模

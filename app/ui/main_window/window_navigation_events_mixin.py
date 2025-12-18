@@ -4,6 +4,10 @@ from __future__ import annotations
 from PyQt6 import QtCore, QtGui
 from typing import Any, Dict, Optional
 
+from app.ui.controllers.validation_graph_code_service import (
+    GraphCodeValidationOptions,
+    GraphCodeValidationService,
+)
 from app.ui.foundation.toast_notification import ToastNotification
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.models.view_modes import ViewMode
@@ -30,10 +34,23 @@ class WindowAndNavigationEventsMixin:
         if not hasattr(self, "save_status_label"):
             return
 
-        # 节点图库 / 复合节点页面：固定提示为只读
-        if view_mode in (ViewMode.GRAPH_LIBRARY, ViewMode.COMPOSITE):
+        # 节点图库页面：固定提示为只读
+        if view_mode == ViewMode.GRAPH_LIBRARY:
             self.save_status_label.setText("当前页面不允许修改")
             self.save_status_label.setProperty("status", "readonly")
+            self.save_status_label.style().unpolish(self.save_status_label)
+            self.save_status_label.style().polish(self.save_status_label)
+            return
+        # 复合节点页面：根据页面能力显示
+        if view_mode == ViewMode.COMPOSITE:
+            composite_widget = getattr(self, "composite_widget", None)
+            can_persist = bool(getattr(composite_widget, "can_persist_composite", False))
+            if can_persist:
+                self.save_status_label.setText("复合节点：允许保存")
+                self.save_status_label.setProperty("status", "saved")
+            else:
+                self.save_status_label.setText("复合节点：预览（不落盘）")
+                self.save_status_label.setProperty("status", "readonly")
             self.save_status_label.style().unpolish(self.save_status_label)
             self.save_status_label.style().polish(self.save_status_label)
             return
@@ -44,6 +61,7 @@ class WindowAndNavigationEventsMixin:
             "saved": "✓ 已保存",
             "unsaved": "● 未保存",
             "saving": "⟳ 保存中...",
+            "readonly": "只读（不落盘）",
         }
         self.save_status_label.setText(status_text_map.get(last_status, "已保存"))
         self.save_status_label.setProperty("status", last_status)
@@ -168,17 +186,13 @@ class WindowAndNavigationEventsMixin:
 
     def _save_ui_session_state(self) -> None:
         """在窗口关闭前采集并持久化当前 UI 会话状态。"""
-        workspace_path = getattr(self, "workspace_path", None)
-        if workspace_path is None:
-            return
+        workspace_path = self.app_state.workspace_path
         state_payload = self._build_ui_session_state_payload()
         save_last_session_state(workspace_path, state_payload)
 
     def _schedule_ui_session_state_save(self) -> None:
         """请求在短暂延迟后保存一次 UI 会话状态（轻量去抖）。"""
-        workspace_path = getattr(self, "workspace_path", None)
-        if workspace_path is None:
-            return
+        workspace_path = self.app_state.workspace_path
 
         existing_timer = getattr(self, "_ui_session_state_timer", None)
         if not isinstance(existing_timer, QtCore.QTimer):
@@ -186,8 +200,7 @@ class WindowAndNavigationEventsMixin:
             timer.setSingleShot(True)
 
             def _on_timeout() -> None:
-                if hasattr(self, "_save_ui_session_state"):
-                    self._save_ui_session_state()
+                self._save_ui_session_state()
 
             timer.timeout.connect(_on_timeout)
             setattr(self, "_ui_session_state_timer", timer)
@@ -197,9 +210,7 @@ class WindowAndNavigationEventsMixin:
 
     def _restore_ui_session_state(self) -> None:
         """在启动完成后尝试从磁盘恢复上一次 UI 会话状态。"""
-        workspace_path = getattr(self, "workspace_path", None)
-        if workspace_path is None:
-            return
+        workspace_path = self.app_state.workspace_path
 
         loaded_state = load_last_session_state(workspace_path)
         if not isinstance(loaded_state, dict):
@@ -364,12 +375,10 @@ class WindowAndNavigationEventsMixin:
         graph_identifier_value = graph_editor_state.get("graph_id")
         if not isinstance(graph_identifier_value, str) or not graph_identifier_value:
             return
-        resource_manager_candidate = getattr(self, "resource_manager", None)
-        graph_controller_candidate = getattr(self, "graph_controller", None)
-        if resource_manager_candidate is None or graph_controller_candidate is None:
-            return
+        resource_manager = self.app_state.resource_manager
+        graph_controller = self.graph_controller
 
-        graph_resource = resource_manager_candidate.load_resource(ResourceType.GRAPH, graph_identifier_value)
+        graph_resource = resource_manager.load_resource(ResourceType.GRAPH, graph_identifier_value)
         if not isinstance(graph_resource, dict):
             return
 
@@ -383,7 +392,7 @@ class WindowAndNavigationEventsMixin:
         else:
             graph_display_name = graph_identifier_value
 
-        graph_controller_candidate.open_independent_graph(
+        graph_controller.open_independent_graph(
             graph_identifier_value,
             graph_resource,
             graph_display_name,
@@ -398,7 +407,7 @@ class WindowAndNavigationEventsMixin:
         if controller is not None:
             if status == "unsaved" and hasattr(controller, "mark_graph_dirty"):
                 controller.mark_graph_dirty()
-            elif status == "saved" and hasattr(controller, "clear_graph_dirty"):
+            elif status in ("saved", "readonly") and hasattr(controller, "clear_graph_dirty"):
                 controller.clear_graph_dirty()
 
         if not hasattr(self, "save_status_label"):
@@ -416,6 +425,7 @@ class WindowAndNavigationEventsMixin:
             "saved": "✓ 已保存",
             "unsaved": "● 未保存",
             "saving": "⟳ 保存中...",
+            "readonly": "只读（不落盘）",
         }
         self.save_status_label.setText(status_text_map.get(status, "已保存"))
         self.save_status_label.setProperty("status", status)
@@ -454,10 +464,7 @@ class WindowAndNavigationEventsMixin:
         if management_state is not None:
             setattr(management_state, "section_key", str(section_key))
 
-        policy = getattr(self, "right_panel_policy", None)
-        apply_method = getattr(policy, "apply_management_section", None)
-        if callable(apply_method):
-            apply_method(section_key)
+        self.right_panel.apply_management_section(section_key)
 
     def _open_player_editor(self) -> None:
         """打开玩家编辑器（战斗预设页签内部）"""
@@ -467,10 +474,38 @@ class WindowAndNavigationEventsMixin:
         elif hasattr(self, "combat_widget") and hasattr(self.combat_widget, "tabs"):
             self.combat_widget.tabs.setCurrentIndex(0)
         # 同时将右侧面板切换到玩家模板详情标签（如已挂载）
-        if hasattr(self, "right_panel_registry"):
-            self.right_panel_registry.switch_to("player_editor")
+        self.right_panel.switch_to("player_editor")
 
     # === 验证与设置 ===
+
+    def _get_graph_code_validation_service(self) -> GraphCodeValidationService:
+        service = getattr(self, "_graph_code_validation_service", None)
+        if service is None:
+            service = GraphCodeValidationService()
+            setattr(self, "_graph_code_validation_service", service)
+        return service
+
+    def _trigger_validation_full(self) -> None:
+        """触发“存档综合 + 节点图源码”全量验证（默认按当前存档范围）。"""
+        self._trigger_validation()
+        validation_panel = getattr(self, "validation_panel", None)
+        if validation_panel is None or not hasattr(validation_panel, "get_graph_code_validation_options"):
+            self._trigger_graph_code_validation(
+                scope="package",
+                strict_entity_wire_only=False,
+                disable_cache=False,
+                enable_composite_struct_check=True,
+            )
+            return
+        strict_entity_wire_only, disable_cache, enable_composite_struct_check = (
+            validation_panel.get_graph_code_validation_options()
+        )
+        self._trigger_graph_code_validation(
+            scope="package",
+            strict_entity_wire_only=bool(strict_entity_wire_only),
+            disable_cache=bool(disable_cache),
+            enable_composite_struct_check=bool(enable_composite_struct_check),
+        )
 
     def _trigger_validation(self) -> None:
         """触发当前存档的验证流程"""
@@ -479,9 +514,48 @@ class WindowAndNavigationEventsMixin:
             self.validation_panel.clear()
             return
 
-        validator = ComprehensiveValidator(package, self.resource_manager, verbose=False)
+        validator = ComprehensiveValidator(package, self.app_state.resource_manager, verbose=False)
         issues = validator.validate_all()
-        self.validation_panel.update_issues(issues)
+        if hasattr(self.validation_panel, "update_package_issues"):
+            self.validation_panel.update_package_issues(issues)
+        else:
+            self.validation_panel.update_issues(issues)
+
+    def _trigger_graph_code_validation(
+        self,
+        *,
+        scope: str,
+        strict_entity_wire_only: bool,
+        disable_cache: bool,
+        enable_composite_struct_check: bool,
+    ) -> None:
+        """触发节点图源码校验，并把结果刷新到验证页面。"""
+        validation_panel = getattr(self, "validation_panel", None)
+        if validation_panel is None:
+            return
+
+        package = getattr(self.package_controller, "current_package", None)
+        if scope == "package" and not package:
+            validation_panel.clear()
+            return
+
+        service = self._get_graph_code_validation_service()
+        options = GraphCodeValidationOptions(
+            scope=str(scope or ""),
+            strict_entity_wire_only=bool(strict_entity_wire_only),
+            disable_cache=bool(disable_cache),
+            enable_composite_struct_check=bool(enable_composite_struct_check),
+        )
+        issues = service.validate_for_ui(
+            resource_manager=self.app_state.resource_manager,
+            current_package=package if scope == "package" else None,
+            options=options,
+        )
+        if hasattr(validation_panel, "update_graph_code_issues"):
+            validation_panel.update_graph_code_issues(issues)
+        else:
+            # 兼容：若旧面板不支持区分来源，则直接合并展示
+            validation_panel.update_issues(list(issues))
 
     def _open_settings_dialog(self) -> None:
         """打开设置对话框并在需要时刷新任务清单"""
@@ -494,7 +568,7 @@ class WindowAndNavigationEventsMixin:
             self._show_toast("已根据新设置刷新任务清单", "success")
 
     def _on_manual_refresh_resource_library(self) -> None:
-        """手动刷新资源库（顶部工具栏“更新”按钮）。
+        """手动刷新资源库（顶部工具栏“刷新”按钮）。
 
         当选择“手动更新”模式或希望立刻查看外部工具对资源库的改动时，
         通过此入口重建资源索引并刷新各资源库相关视图。
@@ -506,11 +580,34 @@ class WindowAndNavigationEventsMixin:
     # === 窗口关闭 ===
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        """窗口关闭事件"""
-        if hasattr(self, "_save_ui_session_state"):
-            self._save_ui_session_state()
+        """窗口关闭事件。
+
+        重要：关闭时不要无条件执行“全量保存”。
+
+        背景：
+        - 资源库支持外部工具修改 + 自动刷新到 UI；
+        - 若关闭时强制走 `save_package()`（force_full=True），会把当前属性面板/内存视图中的对象
+          无条件序列化写回资源文件与索引，进而出现“外部更新已刷新到 UI，但退出又被旧内容覆盖”的问题。
+
+        策略：
+        - 先保存 UI 会话状态；
+        - 清理 FileWatcher，避免关闭阶段的内部写盘触发刷新/重载；
+        - 显式 flush 基础信息页的去抖改动（若存在），让 dirty_state 能准确反映真实本地改动；
+        - 最后按脏块增量落盘：dirty_state 为空则不写盘，避免无意义覆盖。
+        """
+        self._save_ui_session_state()
         self.file_watcher_manager.cleanup()
-        self.package_controller.save_package()
+
+        package_controller = getattr(self, "package_controller", None)
+        if package_controller is not None:
+            flush_callback = getattr(package_controller, "flush_current_resource_panel", None)
+            if callable(flush_callback):
+                flush_callback()
+
+            if hasattr(package_controller, "save_dirty_blocks"):
+                package_controller.save_dirty_blocks()
+            else:
+                package_controller.save_package()
 
         from engine.configs.settings import settings
 

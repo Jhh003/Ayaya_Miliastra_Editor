@@ -1,16 +1,18 @@
 """复合节点加载器 - 负责复合节点的文件加载、保存和序列化"""
 
 from __future__ import annotations
-import re
 from pathlib import Path
 from typing import Dict, Optional
 import ast
 
-from engine.nodes.advanced_node_features import CompositeNodeConfig, VirtualPinConfig
+from engine.nodes.advanced_node_features import CompositeNodeConfig
 from engine.nodes.node_definition_loader import NodeDef
 from engine.graph import CompositeCodeParser
+from engine.graph.composite.source_format import (
+    find_primary_composite_class,
+    try_parse_composite_payload,
+)
 from engine.graph.utils.metadata_extractor import extract_metadata_from_code
-from engine.graph.utils.ast_utils import find_composite_function
 from engine.utils.logging.logger import log_info
 from engine.utils.name_utils import sanitize_composite_filename
 
@@ -19,8 +21,8 @@ class CompositeNodeLoader:
     """复合节点加载器 - 处理文件的读取、解析和序列化
     
     职责：
-    - 从文件加载复合节点（支持函数格式和类格式）
-    - 保存复合节点为文件（函数格式）
+    - 从文件加载复合节点（仅支持：payload / 类格式）
+    - 保存复合节点为文件（类格式，含 JSON payload；用于可视化编辑闭环）
     - 文件名处理和路径计算
     """
     
@@ -70,19 +72,18 @@ class CompositeNodeLoader:
         if load_subgraph:
             # 需要完整解析子图时才构建节点库与解析器，避免元数据加载阶段的额外扫描开销
             # 优先使用外部注入的基础节点库，避免在加载过程中回调注册表导致循环依赖
-            if self.base_node_library is not None:
-                node_library = self.base_node_library
-            else:
-                # 回退：直接从实现侧加载基础节点库（不包含复合节点），避免触发注册表的完整加载流程
-                from engine.nodes.impl_definition_loader import load_all_nodes_from_impl
-
-                node_library = load_all_nodes_from_impl(
-                    self.workspace_path,
-                    include_composite=False,
-                    verbose=self.verbose,
+            if self.base_node_library is None:
+                raise ValueError(
+                    "CompositeNodeLoader.load_composite_from_file(load_subgraph=True) 需要注入 base_node_library。"
+                    "禁止在此处隐式重新扫描实现库或反向触发 NodeRegistry，以避免缓存不一致/循环依赖。"
                 )
+            node_library = self.base_node_library
 
-            parser = CompositeCodeParser(node_library, verbose=self.verbose)
+            parser = CompositeCodeParser(
+                node_library,
+                verbose=self.verbose,
+                workspace_path=self.workspace_path,
+            )
             # 完整解析（包括子图）- parse_code 会自动检测格式
             return parser.parse_code(code, file_path)
 
@@ -90,25 +91,32 @@ class CompositeNodeLoader:
         tree = ast.parse(code)
         metadata_obj = extract_metadata_from_code(code)
 
-        # 检测格式：类格式 vs 函数格式
-        if "@composite_class" in code:
-            # 类格式：从类定义提取
-            class_def = self._find_composite_class_in_tree(tree)
-            if class_def:
-                from engine.graph.ir.virtual_pin_builder import build_virtual_pins_from_class
+        # 优先：可视化编辑器落盘格式（JSON payload）
+        payload_composite = try_parse_composite_payload(tree)
+        if payload_composite is not None:
+            folder_path = self.get_relative_folder_path(file_path)
+            # 懒加载：保留虚拟引脚与元数据，子图保持空壳，避免在启动阶段加载大图
+            return CompositeNodeConfig(
+                composite_id=payload_composite.composite_id,
+                node_name=payload_composite.node_name,
+                node_description=payload_composite.node_description or "",
+                scope=payload_composite.scope or "server",
+                virtual_pins=payload_composite.virtual_pins,
+                sub_graph={"nodes": [], "edges": [], "graph_variables": []},
+                folder_path=(payload_composite.folder_path or metadata_obj.folder_path or folder_path),
+            )
 
-                virtual_pins = build_virtual_pins_from_class(class_def)
-                node_name = class_def.name
-            else:
-                virtual_pins = []
-                node_name = "未命名"
-        else:
-            # 函数格式：从函数签名提取
-            func_def = find_composite_function(tree)
-            from engine.graph.ir.virtual_pin_builder import build_virtual_pins_from_signature
+        # 仅支持类格式：从类定义提取虚拟引脚
+        class_def = find_primary_composite_class(tree)
+        if class_def is None:
+            raise ValueError(
+                "复合节点仅支持 payload 或类格式定义：未找到 COMPOSITE_PAYLOAD_JSON 且未找到 @composite_class"
+            )
 
-            virtual_pins = build_virtual_pins_from_signature(func_def) if func_def else []
-            node_name = func_def.name if func_def else "未命名"
+        from engine.graph.ir.virtual_pin_builder import build_virtual_pins_from_class
+
+        virtual_pins = build_virtual_pins_from_class(class_def)
+        node_name = class_def.name
 
         # 计算文件夹路径
         folder_path = self.get_relative_folder_path(file_path)
@@ -124,24 +132,8 @@ class CompositeNodeLoader:
             folder_path=(metadata_obj.folder_path or folder_path),
         )
     
-    def _find_composite_class_in_tree(self, tree: ast.Module) -> Optional[ast.ClassDef]:
-        """在AST中查找复合节点类定义
-        
-        Args:
-            tree: AST根节点
-            
-        Returns:
-            类定义节点，未找到返回None
-        """
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                for decorator in node.decorator_list:
-                    if isinstance(decorator, ast.Name) and decorator.id == 'composite_class':
-                        return node
-        return None
-    
     def save_composite_to_file(self, composite: CompositeNodeConfig) -> Path:
-        """保存复合节点为函数格式文件
+        """保存复合节点为类格式文件（含 JSON payload）
         
         Args:
             composite: 复合节点配置
@@ -165,7 +157,7 @@ class CompositeNodeLoader:
             file.write(code)
         
         if self.verbose:
-            log_info(f"保存复合节点（函数格式）: {file_path.name}")
+            log_info(f"保存复合节点（类格式）: {file_path.name}")
         
         return file_path
     

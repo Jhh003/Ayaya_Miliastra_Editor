@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-静态扫描工具：在 core/automation 下查找 capture_window/capture_region 的使用点，
+静态扫描工具：在 app/automation 下查找 capture_window/capture_region 的使用点，
 检查其后 N 行内是否存在 _emit_visual(...) 或 visual_callback(...) 的调用；若无，则打印提醒。
 
 用法：
@@ -46,7 +46,7 @@ def main() -> int:
     parser.add_argument('--window', type=int, default=30, help='向后搜索的行数窗口，默认 30')
     args = parser.parse_args()
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    target_root = os.path.join(project_root, 'core', 'automation')
+    target_root = os.path.join(project_root, 'app', 'automation')
     if not os.path.isdir(target_root):
         print(f"✗ 目录不存在: {target_root}")
         return 1

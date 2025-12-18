@@ -27,19 +27,43 @@ class UiPageSpec:
     text_binding_relative_path: str
 
 
-UI_PAGE_SPECS: Dict[str, UiPageSpec] = {
-    # 后续可在此按需补充更多页面
-    "forge_hero_forge": UiPageSpec(
-        ui_page_id="forge_hero_forge",
-        html_relative_path="projects/锻刀英雄/ui_mockups/forge_ui_mockup.html",
-        flattened_relative_path=(
-            "projects/锻刀英雄/ui_mockups/flattened/forge_ui_mockup_flattened.html"
-        ),
-        text_binding_relative_path=(
-            "assets/资源库/管理配置/UI文本绑定/forge_hero_forge_ui_text_bindings.json"
-        ),
-    ),
-}
+_UI_PAGE_ID_PREFIX = "forge_hero_"
+_UI_MOCKUPS_ROOT_RELATIVE = Path("projects/锻刀英雄/ui_mockups")
+_UI_MOCKUPS_FLATTENED_RELATIVE = Path("projects/锻刀英雄/ui_mockups/flattened")
+_UI_TEXT_BINDINGS_ROOT_RELATIVE = Path("assets/资源库/管理配置/UI文本绑定")
+
+
+def _build_ui_page_specs(workspace_path: Path) -> Dict[str, UiPageSpec]:
+    """扫描锻刀英雄原型 UI 目录，构建 ui_page_id → UiPageSpec 映射。
+
+    规则：
+    - 原始页面：projects/锻刀英雄/ui_mockups/<slug>_ui_mockup.html
+    - 扁平化输出：projects/锻刀英雄/ui_mockups/flattened/<slug>_ui_mockup_flattened.html
+    - 绑定资源：assets/资源库/管理配置/UI文本绑定/forge_hero_<slug>_ui_text_bindings.json
+    """
+    specs: Dict[str, UiPageSpec] = {}
+
+    mockups_dir = workspace_path / _UI_MOCKUPS_ROOT_RELATIVE
+    if not mockups_dir.is_dir():
+        return specs
+
+    for html_path in sorted(mockups_dir.glob("*_ui_mockup.html"), key=lambda path: path.as_posix()):
+        if not html_path.is_file():
+            continue
+        slug = html_path.name.removesuffix("_ui_mockup.html")
+        if not slug:
+            continue
+        ui_page_id = f"{_UI_PAGE_ID_PREFIX}{slug}"
+        flattened_relative = _UI_MOCKUPS_FLATTENED_RELATIVE / f"{slug}_ui_mockup_flattened.html"
+        binding_relative = _UI_TEXT_BINDINGS_ROOT_RELATIVE / f"{ui_page_id}_ui_text_bindings.json"
+        specs[ui_page_id] = UiPageSpec(
+            ui_page_id=ui_page_id,
+            html_relative_path=str(_UI_MOCKUPS_ROOT_RELATIVE / f"{slug}_ui_mockup.html"),
+            flattened_relative_path=str(flattened_relative),
+            text_binding_relative_path=str(binding_relative),
+        )
+
+    return specs
 
 
 def _find_workspace_root(current_path: Path) -> Path:
@@ -52,9 +76,27 @@ def _find_workspace_root(current_path: Path) -> Path:
 
 
 def _load_ui_page_spec(ui_page_id: str) -> UiPageSpec:
-    if ui_page_id not in UI_PAGE_SPECS:
-        raise ValueError(f"不支持的 ui_page_id: {ui_page_id!r}")
-    return UI_PAGE_SPECS[ui_page_id]
+    current_file = Path(__file__).resolve()
+    workspace_path = _find_workspace_root(current_file)
+    specs = _build_ui_page_specs(workspace_path)
+    if ui_page_id not in specs:
+        raise ValueError(
+            f"不支持的 ui_page_id: {ui_page_id!r}。"
+            f"请检查 projects/锻刀英雄/ui_mockups 下是否存在对应的 <slug>_ui_mockup.html，"
+            f"或先使用 --list-pages 查看可用页面。"
+        )
+    return specs[ui_page_id]
+
+
+def _list_ui_pages(workspace_path: Path) -> None:
+    specs = _build_ui_page_specs(workspace_path)
+    if not specs:
+        print("未发现可构建的 UI 页面：projects/锻刀英雄/ui_mockups 目录不存在或未找到 *_ui_mockup.html")
+        return
+    print("可构建的 UI 页面：")
+    for page_id in sorted(specs.keys()):
+        spec = specs[page_id]
+        print(f"- {page_id}: {spec.html_relative_path} -> {spec.flattened_relative_path}")
 
 
 def _extract_placeholders_from_html(html_text: str) -> List[str]:
@@ -363,7 +405,10 @@ def build_ui_page(ui_page_id: str) -> None:
     current_file = Path(__file__).resolve()
     workspace_path = _find_workspace_root(current_file)
 
-    page_spec = _load_ui_page_spec(ui_page_id)
+    specs = _build_ui_page_specs(workspace_path)
+    if ui_page_id not in specs:
+        raise ValueError(f"不支持的 ui_page_id: {ui_page_id!r}，请先使用 --list-pages 查看可用页面。")
+    page_spec = specs[ui_page_id]
 
     print(f"开始构建 UI 页面: {ui_page_id}")
     _run_flatten_for_page(workspace_path, page_spec)
@@ -385,7 +430,14 @@ def main() -> None:
     if not arguments or len(arguments) < 1:
         print("用法: python -X utf8 -m tools.build_ui_pages <ui_page_id>")
         print("示例: python -X utf8 -m tools.build_ui_pages forge_hero_forge")
+        print("列出页面: python -X utf8 -m tools.build_ui_pages --list-pages")
         print("占位符同步: python -X utf8 -m tools.build_ui_pages --sync-placeholders forge_hero_forge")
+        return
+
+    if arguments[0] == "--list-pages":
+        current_file = Path(__file__).resolve()
+        workspace_path = _find_workspace_root(current_file)
+        _list_ui_pages(workspace_path)
         return
 
     if arguments[0] == "--sync-placeholders":
@@ -395,8 +447,12 @@ def main() -> None:
 
         current_file = Path(__file__).resolve()
         workspace_path = _find_workspace_root(current_file)
-
-        page_spec_value = _load_ui_page_spec(ui_page_id_value)
+        specs = _build_ui_page_specs(workspace_path)
+        if ui_page_id_value not in specs:
+            raise ValueError(
+                f"不支持的 ui_page_id: {ui_page_id_value!r}，请先使用 --list-pages 查看可用页面。"
+            )
+        page_spec_value = specs[ui_page_id_value]
         _sync_placeholders_for_page(workspace_path, page_spec_value)
         return
 

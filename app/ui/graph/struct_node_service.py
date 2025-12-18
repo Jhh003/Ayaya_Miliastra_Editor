@@ -34,6 +34,7 @@ from engine.graph.common import (
 from engine.resources.definition_schema_view import (
     get_default_definition_schema_view,
 )
+from engine.graph.semantic import GraphSemanticPass, SEMANTIC_STRUCT_ID_CONSTANT_KEY
 from app.ui.dialogs.struct_binding_dialog import StructBindingDialog
 from app.ui.graph.logic.struct_logic import (
     build_struct_node_def_proxy,
@@ -98,6 +99,12 @@ def get_current_package_structs(scene: "GraphScene") -> Optional[Dict[str, dict]
             # 图编辑层不提供为【拆分/拼装/修改结构体】节点绑定选项。
             if struct_type and struct_type != "basic":
                 continue
+        else:
+            struct_type_new = data.get("struct_type")
+            if isinstance(struct_type_new, str):
+                struct_type_text = struct_type_new.strip()
+                if struct_type_text and struct_type_text != "basic":
+                    continue
         structs[str(struct_id)] = dict(data)
     return structs
 
@@ -262,7 +269,7 @@ def bind_struct_for_node(scene: "GraphScene", node_id: str) -> None:
     if not isinstance(struct_data, dict):
         return
 
-    struct_name_value = struct_data.get("name")
+    struct_name_value = struct_data.get("name") or struct_data.get("struct_name")
     struct_name = str(struct_name_value).strip() if isinstance(struct_name_value, str) else selected_struct_id
 
     binding_payload: Dict[str, object] = {
@@ -270,7 +277,11 @@ def bind_struct_for_node(scene: "GraphScene", node_id: str) -> None:
         "struct_name": struct_name,
         "field_names": list(selected_field_names),
     }
-    scene.model.set_node_struct_binding(node_id, binding_payload)
+    # 绑定“意图”写在节点本体（隐藏稳定 ID + 可见结构体名常量），
+    # 语义元数据（metadata["struct_bindings"]）由 GraphSemanticPass 统一覆盖式生成。
+    if not isinstance(node.input_constants, dict):
+        node.input_constants = {}
+    node.input_constants[SEMANTIC_STRUCT_ID_CONSTANT_KEY] = selected_struct_id
 
     # 若节点上存在“结构体名”输入端口，则同步其常量值，便于在 Graph Code 与 UI 中直观看到已绑定结构体。
     has_struct_name_port = any(
@@ -283,7 +294,8 @@ def bind_struct_for_node(scene: "GraphScene", node_id: str) -> None:
         node.input_constants[STRUCT_NAME_PORT_NAME] = struct_name
 
     # 基于最新绑定信息补全端口
-    sync_struct_ports_for_node(scene, node_id, structs)
+    sync_struct_ports_for_node(scene, node_id, structs, binding_payload_override=binding_payload)
+    GraphSemanticPass.apply(scene.model)
 
     if callable(getattr(scene, "on_data_changed", None)):
         scene.on_data_changed()
@@ -293,13 +305,15 @@ def sync_struct_ports_for_node(
     scene: "GraphScene",
     node_id: str,
     structs: Dict[str, dict],
+    *,
+    binding_payload_override: Optional[Dict[str, object]] = None,
 ) -> None:
     """根据信息为指定结构体节点补全字段端口（仅新增缺失端口，不主动删除）。"""
     node = scene.model.nodes.get(node_id)
     if not node:
         return
 
-    binding_payload = scene.model.get_node_struct_binding(node_id)
+    binding_payload = binding_payload_override or scene.model.get_node_struct_binding(node_id)
     context = resolve_struct_binding(binding_payload, structs)
     if context is None:
         return

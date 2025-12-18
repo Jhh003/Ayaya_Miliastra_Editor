@@ -32,6 +32,7 @@ from app.ui.todo.todo_config import TodoStyles, StepTypeRules
 from engine.nodes.port_type_system import is_flow_port_with_context
 from engine.nodes.composite_node_manager import get_composite_node_manager
 from app.ui.todo import todo_preview_handlers
+from app.models.edit_session_capabilities import EditSessionCapabilities
 
 
 class TodoPreviewController:
@@ -137,15 +138,18 @@ class TodoPreviewController:
         """
         model = deserialize_model(graph_data)
 
-        # 任务清单右侧预览使用只读场景
-        scene = GraphScene(model, read_only=True)
+        # 任务清单右侧预览使用只读能力（统一注入，避免 view/scene 各自拼 read_only）
+        preview_capabilities = EditSessionCapabilities.read_only_preview()
+        scene = GraphScene(
+            model,
+            read_only=True,
+            edit_session_capabilities=preview_capabilities,
+        )
         populate_scene_from_model(scene, enable_batch_mode=True)
 
         # 替换视图的场景
         self.view.setScene(scene)
-        # 视图层也开启只读，禁用删除/复制/粘贴等快捷键与右键菜单
-        if hasattr(self.view, 'read_only'):
-            self.view.read_only = True
+        self.view.set_edit_session_capabilities(preview_capabilities)
 
         # 禁用常量编辑控件的交互（文本与ProxyWidget）
         # 说明：不使用try/except，逐项检查方法是否存在再调用
@@ -193,7 +197,7 @@ class TodoPreviewController:
         # 批处理更新，避免闪烁
         self._prepare_for_focus()
 
-        # 事件流根：若外层已给出节点集合，则优先使用显式参数（避免通过 detail_info 塞临时字段）
+        # 事件流根：若外层已给出节点集合，则优先使用显式参数（避免通过 detail_info 增加额外字段）
         if StepTypeRules.is_event_flow_root(detail_type) and event_flow_node_ids is not None:
             self._handle_event_flow_root_with_node_ids(
                 current_version=current_version,
@@ -206,6 +210,7 @@ class TodoPreviewController:
             handler(todo, current_version)
         else:
             # 未注册类型：仅恢复视图更新状态，保持“清空高亮+还原透明度”的基线视图
+            self.view.restore_all_opacity()
             self._hide_overlay()
             self._finalize_updates()
 
@@ -242,6 +247,8 @@ class TodoPreviewController:
             )
             return
 
+        # 无显式节点集合：恢复透明度并回退到适应全图
+        self.view.restore_all_opacity()
         self._hide_overlay()
         self._finalize_updates()
         self._schedule_focus(
@@ -253,6 +260,95 @@ class TodoPreviewController:
     def focus_on_node_group(self, node_ids: List[str], *, use_animation: Optional[bool] = None) -> None:
         """对外公开的分组聚焦接口。"""
         self._focus_on_node_group(node_ids, use_animation=use_animation)
+
+    # === handlers 公共 API（供 `todo_preview_handlers.py` 使用）===
+    # 说明：
+    # - handlers 属于独立模块，不应通过 `controller._xxx()` 形式调用私有方法作为跨模块协议
+    # - 这里提供稳定的公开方法名，内部仍可复用现有私有实现
+
+    def highlight_single_node_and_focus(
+        self,
+        *,
+        node_id: Optional[str],
+        current_version: int,
+        dim_unrelated: bool,
+        hide_overlay: bool,
+        extra_highlighting: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """单节点高亮 + 可选端口高亮 + 灰显 + 聚焦 的组合模板（handlers 公共入口）。"""
+        self._highlight_single_node_and_focus(
+            node_id=node_id,
+            current_version=current_version,
+            dim_unrelated=dim_unrelated,
+            hide_overlay=hide_overlay,
+            extra_highlighting=extra_highlighting,
+        )
+
+    def hide_overlay(self) -> None:
+        """隐藏预览浮窗（handlers 公共入口）。"""
+        self._hide_overlay()
+
+    def finalize_updates(self) -> None:
+        """结束批处理更新（handlers 公共入口）。"""
+        self._finalize_updates()
+
+    def dim_unrelated(self, node_ids: List[str], edge_ids: List[Optional[str]]) -> None:
+        """灰显无关节点/边（handlers 公共入口）。"""
+        self._dim_unrelated(node_ids, edge_ids)
+
+    def schedule_focus(self, version: int, fn: Callable[[bool], None]) -> None:
+        """按版本节流/失效机制调度聚焦（handlers 公共入口）。"""
+        self._schedule_focus(version, fn)
+
+    def overlay_and_focus(
+        self,
+        src_node: str,
+        dst_node: str,
+        edge_id: Optional[str],
+        src_port: Optional[str],
+        dst_port: Optional[str],
+        *,
+        order: str = "src-dst",
+        use_animation: Optional[bool] = None,
+    ) -> None:
+        """显示节点对浮窗并聚焦（handlers 公共入口）。"""
+        self._overlay_and_focus(
+            src_node,
+            dst_node,
+            edge_id,
+            src_port,
+            dst_port,
+            order=order,
+            use_animation=use_animation,
+        )
+
+    def is_flow_edge_between(
+        self,
+        src_node_id: Optional[str],
+        src_port: Optional[str],
+        dst_node_id: Optional[str],
+        dst_port: Optional[str],
+    ) -> bool:
+        """根据节点与端口推断是否为流程连线（handlers 公共入口）。"""
+        return self._is_flow_edge_between(src_node_id, src_port, dst_node_id, dst_port)
+
+    def maybe_resolve_edge_id_from_model(
+        self,
+        *,
+        fallback_edge_id: Optional[str],
+        src_node_id: Optional[str],
+        src_port: Optional[str],
+        dst_node_id: Optional[str],
+        dst_port: Optional[str],
+    ) -> Optional[str]:
+        """优先使用 detail_info 中的 edge_id，必要时在模型中按端口信息反查（handlers 公共入口）。"""
+        return self._maybe_resolve_edge_id_from_model(
+            fallback_edge_id=fallback_edge_id,
+            src_node_id=src_node_id,
+            src_port=src_port,
+            dst_node_id=dst_node_id,
+            dst_port=dst_port,
+        )
 
     def _focus_on_node_group(self, node_ids: List[str], *, use_animation: Optional[bool] = None) -> None:
         if not node_ids or not self.view.scene():
@@ -290,7 +386,6 @@ class TodoPreviewController:
         # 批处理，避免闪烁
         self.view.setUpdatesEnabled(False)
         self.view.clear_highlights()
-        self.view.restore_all_opacity()
 
         detail_type = todo.detail_info.get("type", "")
         nodes_to_focus: List[str] = []
@@ -320,6 +415,7 @@ class TodoPreviewController:
             return
 
         # 默认适应全图
+        self.view.restore_all_opacity()
         self.view.setUpdatesEnabled(True)
         QtCore.QTimer.singleShot(TodoStyles.ANIMATION_DELAY, self.view.fit_all)
 
@@ -362,7 +458,8 @@ class TodoPreviewController:
     def _prepare_for_focus(self) -> None:
         self.view.setUpdatesEnabled(False)
         self.view.clear_highlights()
-        self.view.restore_all_opacity()
+        # 不在此处无条件 restore_all_opacity：连续高亮/聚焦场景下会造成全量遍历卡顿；
+        # 需要恢复透明度的分支由具体 handler 明确调用。
 
     def _hide_overlay(self) -> None:
         if hasattr(self.view, 'overlay_manager') and self.view.overlay_manager:
@@ -386,10 +483,16 @@ class TodoPreviewController:
     ) -> None:
         """单节点高亮 + 可选端口高亮 + 灰显 + 聚焦 的组合模板。"""
         if not node_id:
+            # 无可高亮节点时，恢复透明度以保持基线视图
+            self.view.restore_all_opacity()
             if hide_overlay:
                 self._hide_overlay()
             self._finalize_updates()
             return
+
+        if not dim_unrelated:
+            # “仅高亮，不灰显”场景需要清除上一次的灰显状态
+            self.view.restore_all_opacity()
 
         self.view.highlight_node(node_id)
         if extra_highlighting is not None:

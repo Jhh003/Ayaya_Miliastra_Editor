@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-端口与类型模板相关的小工具（仅供 core.automation 内部使用）。
+端口与类型模板相关的小工具（仅供 app.automation 内部使用）。
 
 保持纯函数、无副作用，便于在 `editor_executor` 等模块中复用，
 避免分散的重复实现。

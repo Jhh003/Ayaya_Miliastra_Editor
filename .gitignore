@@ -42,8 +42,9 @@ user_settings.json
 # 防止误把 workspace_path 指到 engine/ 导致缓存跑到 engine/app/runtime/cache
 engine/app/runtime/cache/
 
-# Local per-directory docs (do not version)
-**/claude.md
+# Directory rules docs:
+# - Public directories: `claude.md` is versioned to document purpose/state/notes.
+# - Private directories: rely on the directory-level ignore rules below (docs/, projects/, assets/资源库/** ...).
 
 # 旧版 runtime 缓存路径（兼容历史）
 runtime/graph_cache/
@@ -51,9 +52,8 @@ runtime/resource_cache/
 runtime/node_cache/
 runtime/name_sync_state.json
 
-# 本地私有工程目录（不随仓库分发）
+# 本地私有工程目录（不随仓库分发 / 展示型发布不公开）
 docs/
-tests/
 projects/
 
 # ---------- 资源库上传策略 ----------
@@ -67,6 +67,9 @@ assets/资源库/**
 # 允许：以“示例_”或“模板示例_”开头的资源文件（任意子目录、任意后缀）
 !assets/资源库/**/示例_*
 !assets/资源库/**/模板示例_*
+
+# 明确白名单：复合节点模板（用于公开测试与示例）
+!assets/资源库/复合节点库/composite_多引脚模板_示例.py
 
 # 但即使被白名单放行，也必须继续忽略编译产物与缓存目录/文件（否则会把 .pyc 等带进仓库）
 assets/资源库/**/__pycache__/

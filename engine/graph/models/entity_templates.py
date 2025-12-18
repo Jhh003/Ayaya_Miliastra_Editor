@@ -7,6 +7,7 @@
 from typing import List, Dict
 from engine.configs.rules.entity_rules import ENTITY_TYPES as ENTITY_RULES
 from engine.configs.rules.component_rules import get_all_component_names
+from engine.type_registry import VARIABLE_TYPES as _REGISTRY_VARIABLE_TYPES
 
 # UI 展示信息（图标、默认节点图等）
 # 规则信息（allowed_components 等）从 entity_rules 获取，避免重复维护
@@ -82,34 +83,8 @@ def get_entity_type_info(entity_type: str) -> Dict:
 
 
 # 变量类型定义（统一用于实体/模板自定义变量与节点图变量编辑器）
-# 说明：
-# - 文本均为“规范中文类型名”，与节点端口/结构体/节点图变量等数据类型体系保持一致；
-# - 若后续需要支持新的基础类型或列表类型，应在此处补充，并同步 UI 与校验规则。
-VARIABLE_TYPES = [
-    "字符串",
-    "字符串列表",
-    "整数",
-    "整数列表",
-    "浮点数",
-    "浮点数列表",
-    "布尔值",
-    "布尔值列表",
-    "三维向量",
-    "三维向量列表",
-    "实体",
-    "实体列表",
-    "GUID",
-    "GUID列表",
-    "配置ID",
-    "配置ID列表",
-    "元件ID",
-    "元件ID列表",
-    "阵营",
-    "阵营列表",
-    "结构体",
-    "结构体列表",
-    "字典",
-]
+# 规范中文类型名的唯一事实来源：`engine.type_registry.VARIABLE_TYPES`
+VARIABLE_TYPES = list(_REGISTRY_VARIABLE_TYPES)
 
 # 组件类型定义（由组件注册中心提供统一来源）
 COMPONENT_TYPES = get_all_component_names()

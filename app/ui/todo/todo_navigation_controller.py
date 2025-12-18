@@ -84,17 +84,15 @@ class TodoNavigationController:
 
     # === Ctrl+P 路由 ===
     def _get_active_monitor(self):
-        if self.widget._monitor_window and hasattr(self.widget._monitor_window, "request_pause"):
+        if self.widget._monitor_window is not None:
             return self.widget._monitor_window
-        if self.widget.main_window and hasattr(self.widget.main_window, "execution_monitor_panel"):
-            panel = self.widget.main_window.execution_monitor_panel
-            if hasattr(panel, "request_pause"):
-                return panel
-        return None
+        return self.widget.ui_context.try_get_execution_monitor_panel()
 
     def on_global_ctrl_p(self) -> None:
         monitor = self._get_active_monitor()
-        if monitor and getattr(monitor, "is_running", False) and not getattr(monitor, "is_paused", True):
+        if monitor is None:
+            return
+        if monitor.is_running and not monitor.is_paused:
             monitor.request_pause()
 
 

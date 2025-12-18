@@ -27,21 +27,43 @@ class CentralPagesAssemblyFeature(MainWindowFeature):
         # === Template / Placement / Combat：基础选中与 data_changed ===
         template_widget = getattr(main_window, "template_widget", None)
         if template_widget is not None:
-            template_widget.template_selected.connect(main_window._on_template_selected)
+            # 统一库页选中事件优先：selection_changed(LibrarySelection | None)
+            if hasattr(template_widget, "selection_changed"):
+                connect_optional_signal(
+                    template_widget,
+                    "selection_changed",
+                    main_window._on_library_page_selection_changed,
+                )
+            else:
+                template_widget.template_selected.connect(main_window._on_template_selected)
             connect_optional_signal(template_widget, "data_changed", main_window._on_library_page_data_changed)
 
         placement_widget = getattr(main_window, "placement_widget", None)
         if placement_widget is not None:
-            placement_widget.instance_selected.connect(main_window._on_instance_selected)
-            placement_widget.level_entity_selected.connect(main_window._on_level_entity_selected)
+            if hasattr(placement_widget, "selection_changed"):
+                connect_optional_signal(
+                    placement_widget,
+                    "selection_changed",
+                    main_window._on_library_page_selection_changed,
+                )
+            else:
+                placement_widget.instance_selected.connect(main_window._on_instance_selected)
+                placement_widget.level_entity_selected.connect(main_window._on_level_entity_selected)
             connect_optional_signal(placement_widget, "data_changed", main_window._on_library_page_data_changed)
 
         combat_widget = getattr(main_window, "combat_widget", None)
         if combat_widget is not None:
-            connect_optional_signal(combat_widget, "player_template_selected", main_window._on_player_template_selected)
-            connect_optional_signal(combat_widget, "player_class_selected", main_window._on_player_class_selected)
-            connect_optional_signal(combat_widget, "skill_selected", main_window._on_skill_selected)
-            connect_optional_signal(combat_widget, "item_selected", main_window._on_item_selected)
+            if hasattr(combat_widget, "selection_changed"):
+                connect_optional_signal(
+                    combat_widget,
+                    "selection_changed",
+                    main_window._on_library_page_selection_changed,
+                )
+            else:
+                connect_optional_signal(combat_widget, "player_template_selected", main_window._on_player_template_selected)
+                connect_optional_signal(combat_widget, "player_class_selected", main_window._on_player_class_selected)
+                connect_optional_signal(combat_widget, "skill_selected", main_window._on_skill_selected)
+                connect_optional_signal(combat_widget, "item_selected", main_window._on_item_selected)
             connect_optional_signal(combat_widget, "data_changed", main_window._on_library_page_data_changed)
 
         # === Management：页面级 binder + active section ===
@@ -53,6 +75,11 @@ class CentralPagesAssemblyFeature(MainWindowFeature):
                 "active_section_changed",
                 main_window._on_management_section_changed,
             )
+            connect_optional_signal(
+                management_widget,
+                "selection_summary_changed",
+                main_window._on_management_selection_changed,
+            )
             if nav_coordinator is not None:
                 bind_management_page(management_widget=management_widget, nav_coordinator=nav_coordinator)
 
@@ -60,8 +87,9 @@ class CentralPagesAssemblyFeature(MainWindowFeature):
         todo_widget = getattr(main_window, "todo_widget", None)
         if todo_widget is not None:
             todo_widget.main_window = main_window
-            if hasattr(main_window, "resource_manager"):
-                todo_widget.resource_manager = main_window.resource_manager
+            app_state = getattr(main_window, "app_state", None)
+            if app_state is not None and hasattr(app_state, "resource_manager"):
+                todo_widget.resource_manager = app_state.resource_manager
             if nav_coordinator is not None:
                 bind_todo_page(
                     todo_widget=todo_widget,

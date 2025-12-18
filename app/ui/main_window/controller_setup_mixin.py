@@ -1,12 +1,16 @@
 """控制器设置与信号连接 Mixin"""
 from __future__ import annotations
 
+from engine.graph.models.graph_model import GraphModel
+from app.ui.graph.graph_scene import GraphScene
+
 from app.ui.controllers import (
     PackageController,
     GraphEditorController,
     NavigationCoordinator,
     FileWatcherManager,
 )
+from app.models.edit_session_capabilities import EditSessionCapabilities
 from app.models.view_modes import ViewMode
 from app.runtime.services.graph_data_service import get_shared_graph_data_service
 
@@ -16,11 +20,13 @@ class ControllerSetupMixin:
 
     def _setup_controllers(self) -> None:
         """初始化所有控制器"""
+        app_state = self.app_state
+
         # 存档控制器
         self.package_controller = PackageController(
-            self.workspace_path,
-            self.resource_manager,
-            self.package_index_manager,
+            app_state.workspace_path,
+            app_state.resource_manager,
+            app_state.package_index_manager,
             self,
         )
         # 设置回调函数
@@ -32,19 +38,30 @@ class ControllerSetupMixin:
             self.package_controller.on_external_resource_change = self.refresh_resource_library
 
         # 图编辑控制器
+        graph_view = app_state.graph_view
+        initial_scene = graph_view.scene()
+        if initial_scene is None:
+            raise ValueError("GraphView 尚未绑定任何 Scene，无法初始化 GraphEditorController")
+        if not isinstance(initial_scene, GraphScene):
+            raise TypeError(f"GraphView.scene() 不是 GraphScene: {type(initial_scene)}")
+        initial_model = getattr(initial_scene, "model", None)
+        if not isinstance(initial_model, GraphModel):
+            raise TypeError(f"GraphScene.model 不是 GraphModel: {type(initial_model)}")
+
         self.graph_controller = GraphEditorController(
-            self.resource_manager,
-            self.model,
-            self.scene,
-            self.view,
-            self.library,
-            self,
+            app_state.resource_manager,
+            initial_model,
+            initial_scene,
+            graph_view,
+            app_state.node_library,
+            edit_session_capabilities=EditSessionCapabilities.interactive_preview(),
+            parent=self,
         )
         # 自动排版完成后：刷新持久化缓存，确保下次打开直接使用最新位置
-        if hasattr(self.view, 'on_auto_layout_completed'):
-            self.view.on_auto_layout_completed = self.graph_controller.refresh_persistent_cache_after_layout
+        if hasattr(graph_view, "on_auto_layout_completed"):
+            graph_view.on_auto_layout_completed = self.graph_controller.refresh_persistent_cache_after_layout
         # 自动排版前：允许控制器执行一次性准备（例如从 True→False 关闭跨块复制后强制重载当前图）
-        self.view.on_before_auto_layout = self.graph_controller.prepare_for_auto_layout
+        graph_view.on_before_auto_layout = self.graph_controller.prepare_for_auto_layout
         # 设置回调函数
         self.graph_controller.get_current_package = (
             lambda: self.package_controller.current_package
@@ -52,10 +69,9 @@ class ControllerSetupMixin:
         self.graph_controller.get_property_panel_object_type = (
             lambda: self.property_panel.object_type
         )
-        # 设置视图的添加节点回调
-        self.view.on_add_node_callback = self.graph_controller.add_node_at_position
+        # “添加节点”入口由 GraphEditorController 按 EditSessionCapabilities 统一控制（禁止此处直接写回调，避免语义分裂）
         # 连接视图的双击跳转信号
-        self.view.jump_to_graph_element.connect(self._on_jump_to_graph_element)
+        graph_view.jump_to_graph_element.connect(self._on_jump_to_graph_element)
 
         # 跳转协调器
         self.nav_coordinator = NavigationCoordinator(self)
@@ -66,19 +82,20 @@ class ControllerSetupMixin:
             lambda: self.package_controller.current_package_id
         )
         self.nav_coordinator.get_graph_data_service = (
-            lambda: get_shared_graph_data_service(self.resource_manager, self.package_index_manager)
+            lambda: get_shared_graph_data_service(app_state.resource_manager, app_state.package_index_manager)
         )
 
         # 文件监控管理器
         self.file_watcher_manager = FileWatcherManager(
-            self.resource_manager,
+            app_state.resource_manager,
             self,
         )
         self.file_watcher_manager.get_current_graph_id = (
             lambda: self.graph_controller.current_graph_id
         )
-        self.file_watcher_manager.get_scene = lambda: self.scene
-        self.file_watcher_manager.get_view = lambda: self.view
+        # 注意：GraphEditorController 在加载图时会重建 scene/model，因此这里必须走 controller 的当前 scene。
+        self.file_watcher_manager.get_scene = self.graph_controller.get_current_scene
+        self.file_watcher_manager.get_view = lambda: self.graph_controller.view
         # 当资源库发生外部变更时，触发主窗口统一的资源刷新入口
         if hasattr(self, "refresh_resource_library"):
             self.file_watcher_manager.on_resource_library_changed = self.refresh_resource_library
@@ -123,6 +140,7 @@ class ControllerSetupMixin:
         # === 图编辑控制器信号 ===
         self.graph_controller.graph_loaded.connect(self._on_graph_loaded)
         self.graph_controller.graph_saved.connect(self._on_graph_saved)
+        self.graph_controller.graph_runtime_cache_updated.connect(self._on_graph_runtime_cache_updated)
         self.graph_controller.validation_triggered.connect(self._trigger_validation)
         # 切换到编辑器时，通过导航统一入口，确保左侧导航同步高亮、中央与右侧面板一致切换
         self.graph_controller.switch_to_editor_requested.connect(
@@ -141,11 +159,15 @@ class ControllerSetupMixin:
         self.nav_coordinator.focus_edge.connect(self._focus_edge)
         self.nav_coordinator.load_package.connect(self.package_controller.load_package)
         self.nav_coordinator.switch_to_editor.connect(
-            lambda: self.central_stack.setCurrentIndex(ViewMode.GRAPH_EDITOR.value)
+            lambda: self._navigate_to_mode("graph_editor")
         )
         self.nav_coordinator.open_player_editor.connect(self._open_player_editor)
         # 复合节点选择
         self.nav_coordinator.select_composite_name.connect(self._on_select_composite_name)
+        management_widget = getattr(self, "management_widget", None)
+        focus_method = getattr(management_widget, "focus_section_and_item", None) if management_widget is not None else None
+        if callable(focus_method):
+            self.nav_coordinator.focus_management_section_and_item.connect(focus_method)
 
         # === 文件监控管理器信号 ===
         self.file_watcher_manager.show_toast.connect(self._show_toast)

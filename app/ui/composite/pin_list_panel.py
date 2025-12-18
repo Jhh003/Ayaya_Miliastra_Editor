@@ -13,6 +13,7 @@ class PinListPanel(QtWidgets.QWidget):
     """引脚列表面板，按方向/类型分组展示所有虚拟引脚。"""
 
     pin_name_changed = QtCore.pyqtSignal(VirtualPinConfig, str)
+    pin_type_changed = QtCore.pyqtSignal(VirtualPinConfig, str)
     pin_delete_requested = QtCore.pyqtSignal(VirtualPinConfig)
     pin_merge_requested = QtCore.pyqtSignal(VirtualPinConfig)
 
@@ -99,6 +100,7 @@ class PinListPanel(QtWidgets.QWidget):
             for pin in pins:
                 card = PinCardWidget(pin, self.composite_config.composite_id, self)
                 card.name_changed.connect(self.pin_name_changed)
+                card.type_changed.connect(self.pin_type_changed)
                 card.delete_requested.connect(self.pin_delete_requested)
                 card.merge_requested.connect(self.pin_merge_requested)
                 self.cards_layout.addWidget(card)

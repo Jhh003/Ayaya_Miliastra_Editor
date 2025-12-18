@@ -14,6 +14,14 @@
   - CLI 脚本自身的报错提示与 `--help`
   - `tools.validate.*` / `engine.validate` 的实现与校验输出
 
+### 展示型发布说明（重要）
+- 本仓库采用“展示型”策略：**`docs/` 不随仓库分发**（避免误公开私有文档/工程内容）。
+- **`tests/` 会公开并用于 CI**（基础回归以 `pytest` 为准）。
+- 资源库 `assets/资源库/` 默认“全量忽略 + 白名单放行示例/模板示例”；请勿扩大白名单范围，除非明确确认资源可公开且不会泄露隐私。
+
+### 反馈与交流
+- BUG 反馈交流QQ群：`1073774505`
+
 面向原神千星奇域的 **离线沙箱编辑器 + Graph Code 工具链**：用 Python 代码描述节点图，由内置引擎负责解析、验证、自动排版，再配合自动化脚本把步骤精准落到真实编辑器。
 
 ---
@@ -94,20 +102,44 @@
 | 要求 | 说明 |
 | --- | --- |
 | **操作系统** | Windows 10/11（中文界面，推荐 4K 或 2K 分辨率） |
-| **Python** | 3.10 或更高版本 |
+| **Python** | 3.10+（推荐 3.10.x；仓库代码使用 3.10+ 语法） |
 | **终端** | PowerShell 7 |
 | **其他** | 确保安装 Visual C++ 运行库 |
+
+补充说明：
+- **CI 基线**：Python 3.10
+- **本地验证**：当前仓库已在 Python 3.12.3 下跑通 `pytest`
+
+### 最小可运行版本矩阵（锁定基线）
+
+| 维度 | 基线 |
+| --- | --- |
+| OS | Windows 10/11 |
+| Python | 3.10+（推荐 3.10.x） |
+| 关键依赖版本 | 见 `constraints.txt`（PyQt6 / onnxruntime / opencv / numpy 等已钉死） |
 
 ---
 
 ## 安装依赖
 
-### 依赖安装（未锁定）
+### 依赖安装（已提供版本约束锁）
 
-本仓库目前 **未提供** `requirements.txt/pyproject.toml` 等“可复现的依赖锁定文件”。下方命令仅作为“常用依赖”的安装示例；若你的环境缺库，请以实际报错提示为准补齐。
+本仓库提供以下文件作为**单一权威依赖清单 + 可复现约束锁**：
+
+- `requirements.txt`：运行期直接依赖（不写版本）
+- `constraints.txt`：版本锁（钉死关键原生依赖版本）
+- `requirements-dev.txt`：开发/测试依赖（已钉死 pytest 版本）
+
+安装运行期依赖：
 
 ```powershell
-pip install PyQt6 rapidocr-onnxruntime numpy opencv-python Pillow pyperclip keyboard
+pip install -r requirements.txt -c constraints.txt
+```
+
+安装开发/测试依赖：
+
+```powershell
+pip install -r requirements-dev.txt -c constraints.txt
 ```
 
 ### 依赖说明
@@ -142,7 +174,7 @@ cd <仓库目录>
 ### 2. 安装依赖
 
 ```powershell
-pip install PyQt6 rapidocr-onnxruntime numpy opencv-python Pillow pyperclip keyboard
+pip install -r requirements.txt -c constraints.txt
 ```
 
 ### 3. 启动 UI 主程序
@@ -203,7 +235,13 @@ python -X utf8 -m tools.clear_caches --clear
 python -X utf8 -m tools.clear_caches --clear --rebuild-index --rebuild-graph-caches
 ```
 
-> 注意：当前版本的 `--rebuild-index/--rebuild-graph-caches` 仍处于“占位开关”状态，命令会输出提示但不会真正执行重建逻辑。
+> 注意：`--rebuild-index/--rebuild-graph-caches` 已接入引擎实现，会执行真实重建；如需避免污染仓库缓存目录，可通过 `tools.clear_caches --root <临时目录>` 在临时工作区验证。
+
+### 运行测试（CI 同源）
+
+```powershell
+python -X utf8 -m pytest
+```
 
 ---
 

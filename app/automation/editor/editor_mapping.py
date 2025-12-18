@@ -17,6 +17,7 @@ from app.automation.input.common import (
     sleep_seconds,
 )
 from app.automation.vision import list_nodes, invalidate_cache
+from app.automation.editor.connection_drag import mean_abs_diff_in_region
 from app.automation.editor.view_alignment import run_pan_loop, PanEvaluation
 from app.automation.editor.view_mapping import (
     compute_clamped_step,
@@ -28,6 +29,8 @@ from app.automation.editor.ui_constants import (
     VIEW_SAFE_MARGIN_RATIO_DEFAULT,
     VIEW_MAX_PAN_STEPS_DEFAULT,
     VIEW_PAN_STEP_PX_DEFAULT,
+    VIEW_PAN_NO_VISUAL_CHANGE_ABORT_CONSECUTIVE_DEFAULT,
+    VIEW_PAN_NO_VISUAL_CHANGE_MEAN_DIFF_THRESHOLD_DEFAULT,
     ANCHOR_CREATION_FIRST_WAIT_SECONDS,
     ANCHOR_CREATION_POST_SELECT_WAIT_SECONDS,
     OCR_CACHE_FLUSH_WAIT_SECONDS,
@@ -157,6 +160,59 @@ def ensure_program_point_visible(
     force_when_inside = bool(force_pan_if_inside_margin)
     step_counter: Dict[str, int] = {"count": -1}
 
+    max_no_visual_change_drags = int(
+        getattr(
+            executor,
+            "view_pan_no_visual_change_abort_consecutive",
+            VIEW_PAN_NO_VISUAL_CHANGE_ABORT_CONSECUTIVE_DEFAULT,
+        )
+    )
+    if max_no_visual_change_drags < 0:
+        max_no_visual_change_drags = 0
+    no_visual_change_mean_diff_threshold = float(
+        getattr(
+            executor,
+            "view_pan_no_visual_change_mean_diff_threshold",
+            VIEW_PAN_NO_VISUAL_CHANGE_MEAN_DIFF_THRESHOLD_DEFAULT,
+        )
+    )
+    if no_visual_change_mean_diff_threshold < 0:
+        no_visual_change_mean_diff_threshold = 0.0
+
+    no_visual_change_drag_count = 0
+    abort_due_to_no_visual_change = False
+
+    def _estimate_roi_mean_abs_diff(before_image: Image.Image, after_image: Image.Image, roi: Tuple[int, int, int, int]) -> float:
+        roi_x, roi_y, roi_w, roi_h = roi
+        if int(roi_w) <= 0 or int(roi_h) <= 0:
+            return 0.0
+        left = int(roi_x)
+        top = int(roi_y)
+        right = int(roi_x + roi_w)
+        bottom = int(roi_y + roi_h)
+        if left >= right or top >= bottom:
+            return 0.0
+
+        cx = int(left + (right - left) // 2)
+        cy = int(top + (bottom - top) // 2)
+        qx1 = int(left + (right - left) // 4)
+        qx2 = int(left + (right - left) * 3 // 4)
+        qy1 = int(top + (bottom - top) // 4)
+        qy2 = int(top + (bottom - top) * 3 // 4)
+        sample_points = [
+            (cx, cy),
+            (qx1, qy1),
+            (qx2, qy1),
+            (qx1, qy2),
+            (qx2, qy2),
+        ]
+        diffs: List[float] = []
+        for px, py in sample_points:
+            diffs.append(mean_abs_diff_in_region(before_image, after_image, (int(px), int(py))))
+        if len(diffs) == 0:
+            return 0.0
+        return float(sum(diffs) / float(len(diffs)))
+
     def _capture_frame() -> Image.Image:
         frame: Image.Image | None = None
 
@@ -180,11 +236,18 @@ def ensure_program_point_visible(
         return frame
 
     def _evaluate(current_image: Image.Image, step_index: int) -> PanEvaluation:
+        nonlocal abort_due_to_no_visual_change
         step_counter["count"] = int(step_index)
         if pause_hook is not None:
             pause_hook()
         if allow_continue is not None and not allow_continue():
             executor.log("用户终止/暂停，放弃视口对齐", log_callback)
+            return PanEvaluation(satisfied=False, drag_args=None, aborted=True)
+        if abort_due_to_no_visual_change:
+            executor.log(
+                "[视口对齐] 连续拖拽后画面仍无明显变化，判定为异常，停止视口对齐",
+                log_callback,
+            )
             return PanEvaluation(satisfied=False, drag_args=None, aborted=True)
 
         editor_x, editor_y = convert_program_to_editor_coords(executor, program_x, program_y)
@@ -260,9 +323,19 @@ def ensure_program_point_visible(
         return PanEvaluation(satisfied=False, drag_args=drag_plan)
 
     def _execute_drag(current_image: Image.Image, plan: Dict[str, Any]) -> Image.Image:
+        nonlocal no_visual_change_drag_count
+        nonlocal abort_due_to_no_visual_change
+
         start_screen_x, start_screen_y = plan["start_screen"]
         end_screen_x, end_screen_y = plan["end_screen"]
         roi = plan["roi"]
+        expected_delta = plan.get("expected_content_delta")
+        expected_dx = 0
+        expected_dy = 0
+        planned_non_zero = False
+        if expected_delta is not None:
+            expected_dx, expected_dy = expected_delta
+            planned_non_zero = bool((expected_dx != 0) or (expected_dy != 0))
 
         # 将拖拽起点吸附到画布背景上，避免从节点矩形内部发起无效拖拽
         snapped = _exec_utils.snap_screen_point_to_canvas_background(
@@ -278,6 +351,14 @@ def ensure_program_point_visible(
                 "[视口对齐] 无法在画布内为拖拽起点找到安全背景色位置，本次拖拽已放弃",
                 log_callback,
             )
+            if planned_non_zero and int(max_no_visual_change_drags) > 0:
+                no_visual_change_drag_count += 1
+                executor.log(
+                    f"[视口对齐] 拖拽未执行（起点吸附失败），画面不会变化：连续无变化={int(no_visual_change_drag_count)}/{int(max_no_visual_change_drags)}",
+                    log_callback,
+                )
+                if int(no_visual_change_drag_count) >= int(max_no_visual_change_drags):
+                    abort_due_to_no_visual_change = True
             return current_image
 
         drag_start_x = int(snapped[0])
@@ -373,19 +454,41 @@ def ensure_program_point_visible(
         # 此时允许回退到基于拖拽向量的“预期内容位移”，避免坐标映射长期停滞。
         effective_dx = dx_corr
         effective_dy = dy_corr
-        expected_delta = plan.get("expected_content_delta")
-        if expected_delta is not None:
-            expected_dx, expected_dy = expected_delta
-            # 仅在估计结果完全为 0 且预期步长足够大时启用回退，避免过度干预正常的相位相关结果。
-            if dx_corr == 0 and dy_corr == 0 and (
-                (expected_dx != 0) or (expected_dy != 0)
-            ):
+        if (dx_corr != 0) or (dy_corr != 0):
+            no_visual_change_drag_count = 0
+        if planned_non_zero and dx_corr == 0 and dy_corr == 0:
+            if int(max_no_visual_change_drags) > 0:
+                mean_diff = _estimate_roi_mean_abs_diff(current_image, after, roi)
+                if float(mean_diff) < float(no_visual_change_mean_diff_threshold):
+                    no_visual_change_drag_count += 1
+                    executor.log(
+                        f"[视口对齐] 拖拽后画面无明显变化(meanDiff≈{float(mean_diff):.2f})，疑似拖拽未生效：连续无变化={int(no_visual_change_drag_count)}/{int(max_no_visual_change_drags)}",
+                        log_callback,
+                    )
+                    # 画面无变化时禁止按“预期位移”更新映射，避免坐标快速漂移。
+                    effective_dx = 0
+                    effective_dy = 0
+                    if int(no_visual_change_drag_count) >= int(max_no_visual_change_drags):
+                        abort_due_to_no_visual_change = True
+                else:
+                    # 画面有变化但相位相关估计为 0：允许回退使用预期位移维持映射推进。
+                    no_visual_change_drag_count = 0
+                    effective_dx = int(expected_dx)
+                    effective_dy = int(expected_dy)
+                    executor.log(
+                        f"[视口对齐] 内容位移估计为 0，但画面已变化(meanDiff≈{float(mean_diff):.2f})，回退使用预期拖拽位移 Δ≈({effective_dx},{effective_dy}) 更新原点映射",
+                        log_callback,
+                    )
+            else:
                 effective_dx = int(expected_dx)
                 effective_dy = int(expected_dy)
                 executor.log(
                     f"[视口对齐] 内容位移估计为 0，回退使用预期拖拽位移 Δ≈({effective_dx},{effective_dy}) 更新原点映射",
                     log_callback,
                 )
+        elif planned_non_zero:
+            # 本次规划需要拖拽，且估计得到了非零位移：重置“无变化”计数。
+            no_visual_change_drag_count = 0
         executor.origin_node_pos = (
             int(executor.origin_node_pos[0] + effective_dx),
             int(executor.origin_node_pos[1] + effective_dy),
@@ -508,10 +611,10 @@ def calibrate_coordinates(
     else:
         executor.set_last_context_click_editor_pos(click_pos_x, click_pos_y)
 
-    executor.log("等待锚点节点出现(最多8秒)... [方法: 视觉识别(list_nodes)]", log_callback)
+    executor.log("等待锚点节点出现(最多3秒)... [方法: 视觉识别(list_nodes)]", log_callback)
     screenshot2, candidates = executor.poll_node_candidates(
         anchor_node_title,
-        8.0,
+        3.0,
         log_callback,
         pause_hook,
         allow_continue,

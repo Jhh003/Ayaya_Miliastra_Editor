@@ -85,6 +85,11 @@ class LibraryPageMixin:
             handler(has_selection, context or {})
             return
         if not has_selection:
+            right_panel = getattr(window, "right_panel", None) if window else None
+            update_visibility = getattr(right_panel, "update_visibility", None) if right_panel is not None else None
+            if callable(update_visibility):
+                update_visibility()
+                return
             updater = getattr(window, "_update_right_panel_visibility", None) if window else None
             if callable(updater):
                 updater()

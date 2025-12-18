@@ -280,8 +280,8 @@ class ProgressBarConfig:
 # ============================================================================
 # 界面控件组/布局系统
 # 注意：此处定义的是简化的运行时配置版本，用于序列化/反序列化
-# 完整的编辑器数据模型请参考：core.configs.components.ui_control_group_model
-# 高级概念配置请参考：core.configs.specialized.additional_advanced_configs.UIWidgetGroupConfig
+# 完整的编辑器数据模型请参考：engine.configs.components.ui_control_group_model
+# 高级概念配置请参考：engine.configs.specialized.additional_advanced_configs.UIWidgetGroupConfig
 # ============================================================================
 
 @dataclass

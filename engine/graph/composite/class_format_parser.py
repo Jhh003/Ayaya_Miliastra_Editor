@@ -18,6 +18,7 @@ from engine.graph.ir.flow_builder import parse_method_body as ir_parse_method_bo
 from engine.graph.common import node_name_index_from_library
 from engine.graph.models import GraphModel, NodeModel
 from engine.graph.composite.param_usage_tracker import ParamUsageTracker
+from engine.graph.semantic import GraphSemanticPass
 
 
 class ClassFormatParser:
@@ -71,7 +72,11 @@ class ClassFormatParser:
         # 则记录映射 {"_定时器标识": "定时器标识"}
         self._state_attr_aliases = self._collect_state_attr_aliases(class_def)
         
+        # 语义元数据（signal_bindings/struct_bindings）不在解析过程中多点写入，
+        # 统一在方法合并完成后由 GraphSemanticPass 覆盖式生成。
+
         # 遍历类的所有方法
+        pin_cursor = 0
         for item in class_def.body:
             if not isinstance(item, ast.FunctionDef):
                 continue
@@ -87,12 +92,30 @@ class ClassFormatParser:
 
             # 应用自动推断，确保 inputs/outputs 与虚拟引脚保持一致
             method_spec = _apply_auto_pin_configuration(item, method_spec)
+
+            # 跳过内部方法（不对外暴露）；并保持与 build_virtual_pins_from_class 的顺序一致
+            if method_spec.get("internal", False):
+                continue
+
+            # 为当前方法切出对应的虚拟引脚片段，避免“多入口同名引脚”导致映射互相覆盖
+            method_type = method_spec.get("type")
+            if method_type == "flow_entry":
+                method_pin_count = len(method_spec.get("inputs", []) or []) + len(method_spec.get("outputs", []) or [])
+            elif method_type == "event_handler":
+                expose_event_params = bool(method_spec.get("expose_event_params", False))
+                event_param_count = len(item.args.args[1:]) if expose_event_params else 0
+                method_pin_count = event_param_count + len(method_spec.get("outputs", []) or [])
+            else:
+                method_pin_count = len(method_spec.get("inputs", []) or []) + len(method_spec.get("outputs", []) or [])
+
+            method_virtual_pins = virtual_pins[pin_cursor: pin_cursor + method_pin_count]
+            pin_cursor += method_pin_count
             
             if self.verbose:
                 print(f"  解析方法: {item.name} (类型: {method_spec['type']})")
             
             # 解析方法体生成子图
-            method_graph = self._parse_method_body_for_class(item, method_spec, virtual_pins)
+            method_graph = self._parse_method_body_for_class(item, method_spec, method_virtual_pins, virtual_pins)
             
             # 合并子图到总图
             self._merge_graph(merged_graph, method_graph)
@@ -106,13 +129,16 @@ class ClassFormatParser:
                         merged_graph.event_flow_titles.append(node.title)
                         break
         
+        # 语义元数据统一生成（单点写入）
+        GraphSemanticPass.apply(merged_graph)
         return merged_graph
     
     def _parse_method_body_for_class(
         self,
         method_def: ast.FunctionDef,
         method_spec: Dict[str, Any],
-        virtual_pins: List[VirtualPinConfig]
+        virtual_pins: List[VirtualPinConfig],
+        all_virtual_pins: List[VirtualPinConfig],
     ) -> GraphModel:
         """解析类方法的函数体，生成子图
         
@@ -195,6 +221,7 @@ class ClassFormatParser:
         tracker.collect_aliases(method_def.body)
         tracker.collect_constants(method_def.body)
         tracker.collect_usage_from_calls(method_def.body, title_to_queue_for_match)
+        tracker.collect_usage_from_param_assignments(method_def.body, nodes)
         tracker.collect_control_flow_usage(method_def.body)
         
         # 建立虚拟引脚映射（含数据入；类格式额外支持通过实例字段引用入口形参的场景）
@@ -202,6 +229,7 @@ class ClassFormatParser:
             method_def,
             method_spec,
             virtual_pins,
+            all_virtual_pins,
             method_graph,
             tracker.input_param_usage,
             dict(ir_env.var_map),
@@ -216,6 +244,7 @@ class ClassFormatParser:
         method_def: ast.FunctionDef,
         method_spec: Dict[str, Any],
         virtual_pins: List[VirtualPinConfig],
+        all_virtual_pins: List[VirtualPinConfig],
         method_graph: GraphModel,
         input_param_usage: Dict[str, List[Tuple[str, str]]],
         var_env_snapshot: Dict[str, Tuple[str, str]],
@@ -404,8 +433,10 @@ class ClassFormatParser:
             for pin_name, usage_list in (state_pin_usage or {}).items():
                 if not usage_list:
                     continue
+                # 注意：事件处理器本身通常不声明数据入虚拟引脚；这些输入引脚来自其他 flow_entry 方法。
+                # 因此这里必须在“全量虚拟引脚列表”中查找对应输入引脚，避免因方法切片导致找不到而误报缺线。
                 vpin = next(
-                    (p for p in virtual_pins if p.pin_name == pin_name and p.is_input and not p.is_flow),
+                    (p for p in all_virtual_pins if p.pin_name == pin_name and p.is_input and not p.is_flow),
                     None,
                 )
                 if not vpin:

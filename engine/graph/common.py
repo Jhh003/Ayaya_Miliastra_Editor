@@ -6,6 +6,14 @@ from engine.graph.models import EdgeModel, GraphModel, NodeModel
 from engine.nodes.node_definition_loader import NodeDef
 from engine.utils.graph.graph_utils import is_flow_port_name
 from engine.nodes.port_type_system import is_flow_port_with_context
+from engine.type_registry import (
+    TYPE_BOOLEAN,
+    TYPE_DICT,
+    TYPE_FLOAT,
+    TYPE_INTEGER,
+    TYPE_LIST_PLACEHOLDER,
+    TYPE_STRING,
+)
 from engine.utils.graph.graph_algorithms import (
     group_nodes_by_event,
     group_nodes_by_event_with_topo_order,
@@ -254,12 +262,12 @@ def is_flow_port(node: Optional[Any], port_name: str, is_source: bool) -> bool:
 
 # 统一：Python 类型 ↔ 引脚类型 映射（供解析/生成双向使用）
 PYTHON_TYPE_TO_PIN_TYPE: Dict[str, str] = {
-    "float": "浮点数",
-    "int": "整数",
-    "str": "字符串",
-    "bool": "布尔值",
-    "list": "列表",
-    "dict": "字典",
+    "float": TYPE_FLOAT,
+    "int": TYPE_INTEGER,
+    "str": TYPE_STRING,
+    "bool": TYPE_BOOLEAN,
+    "list": TYPE_LIST_PLACEHOLDER,
+    "dict": TYPE_DICT,
 }
 PIN_TYPE_TO_PYTHON_TYPE: Dict[str, str] = {v: k for k, v in PYTHON_TYPE_TO_PIN_TYPE.items()}
 
@@ -283,15 +291,18 @@ def validate_pin_type_annotation(type_name: str, allow_python_builtin: bool = Fa
     Raises:
         ValueError: 对于被明确禁止的类型标注（如“通用”/Any 等）
     """
-    from engine.configs.rules.datatype_rules import BASE_TYPES, LIST_TYPES
-    
-    # 允许的中文类型集合
-    allowed_types: set = set(BASE_TYPES.keys()) | set(LIST_TYPES.keys())
-    allowed_types.update({"泛型", "字典", "列表", "泛型列表", "流程"})
-    
+    from engine.type_registry import (
+        BANNED_TYPE_ALIASES,
+        PIN_TYPE_ANNOTATION_ALLOWED_TYPES,
+        TYPE_GENERIC,
+    )
+
+    # 允许的中文类型集合（唯一事实来源：engine.type_registry）
+    allowed_types: set = set(PIN_TYPE_ANNOTATION_ALLOWED_TYPES)
+
     type_name = type_name.strip()
     # 严禁旧称与 Any（从源头掐灭）
-    if type_name in {"通用", "Any", "any", "ANY"}:
+    if type_name in BANNED_TYPE_ALIASES:
         raise ValueError(f"不支持的类型标注 '{type_name}'：请使用“泛型”")
     
     # 已是中文类型，直接返回
@@ -312,13 +323,13 @@ def validate_pin_type_annotation(type_name: str, allow_python_builtin: bool = Fa
 
         log_warn(
             "类型标注 '{}' 在当前上下文不允许直接使用 Python 内置类型名，"
-            "已按 '泛型' 处理；推荐改为显式的中文端口类型（如：整数/浮点数/字符串/布尔值/字典/列表/泛型 等）。",
+            "已按 '泛型' 处理；推荐改为显式的中文端口类型（如：整数/浮点数/字符串/布尔值/字典/列表/泛型/泛型列表/泛型字典 等）。",
             type_name,
         )
-        return "泛型"
+        return TYPE_GENERIC
     
     # 未识别的类型，回退为"泛型"
-    return "泛型"
+    return TYPE_GENERIC
     
 
 def node_name_index_from_library(node_library: Dict[str, NodeDef]) -> Dict[str, str]:
@@ -372,6 +383,23 @@ SIGNAL_LISTEN_NODE_TITLE: str = "监听信号"
 
 # 统一的“信号名”端口名称常量，供各层复用，避免直接使用硬编码字符串。
 SIGNAL_NAME_PORT_NAME: str = "信号名"
+
+# ----------------------------------------------------------------------------
+# 语义提示常量（仅用于引擎内部“语义推导 → 绑定落盘”的桥接）
+#
+# 说明：
+# - UI 与解析/IR 管线可以把“用户选择/可解析出的稳定 ID”写入到 node.input_constants 的隐藏键；
+# - `GraphSemanticPass` 会以这些隐藏键作为优先级最高的输入，统一生成 GraphModel.metadata 中的
+#   `signal_bindings/struct_bindings`（并负责向后兼容老数据）。
+# - 这些键名不对应任何真实端口，因此不会参与 Graph Code 生成的参数列表。
+# ----------------------------------------------------------------------------
+
+# 信号：稳定 signal_id 的语义提示键（node.input_constants[...]=<signal_id>）
+# 注意：该键名需与 `engine.graph.semantic.constants.SEMANTIC_SIGNAL_ID_CONSTANT_KEY` 保持一致。
+SIGNAL_ID_HINT_CONSTANT_KEY: str = "__signal_id"
+# 结构体：稳定 struct_id 的语义提示键（node.input_constants[...]=<struct_id>）
+# 注意：该键名需与 `engine.graph.semantic.constants.SEMANTIC_STRUCT_ID_CONSTANT_KEY` 保持一致。
+STRUCT_ID_HINT_CONSTANT_KEY: str = "__struct_id"
 
 # 发送信号节点的静态输入端口：
 # - 流程入：流程控制入口；
@@ -437,12 +465,24 @@ def is_selection_input_port(node: Optional[Any], port_name: str) -> bool:
 
 
 # 静音布局调用：统一保存/恢复调试开关
-def apply_layout_quietly(graph_model: GraphModel) -> None:
+def apply_layout_quietly(
+    graph_model: GraphModel,
+    *,
+    node_library: Optional[dict] = None,
+    workspace_path: Optional["Path"] = None,
+    registry_context: Optional[object] = None,
+) -> None:
     from engine.layout import LayoutService
     from engine.configs.settings import settings
     _old = settings.LAYOUT_DEBUG_PRINT
     settings.LAYOUT_DEBUG_PRINT = False
-    LayoutService.compute_layout(graph_model, clone_model=False)
+    LayoutService.compute_layout(
+        graph_model,
+        node_library=node_library,
+        clone_model=False,
+        workspace_path=workspace_path,
+        registry_context=registry_context,
+    )
     settings.LAYOUT_DEBUG_PRINT = _old
 
 

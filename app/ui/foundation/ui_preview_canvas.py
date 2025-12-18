@@ -48,6 +48,8 @@ class UIPreviewCanvas(QtWidgets.QGraphicsView):
         # 设置视图属性
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        # 交互性优先：控件拖拽/缩放过程中使用整视口更新，避免局部更新在部分 Windows 环境下出现“残影”。
+        self.setViewportUpdateMode(QtWidgets.QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.setDragMode(QtWidgets.QGraphicsView.DragMode.RubberBandDrag)  # 启用橡皮筋框选
         self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setRubberBandSelectionMode(QtCore.Qt.ItemSelectionMode.IntersectsItemShape)

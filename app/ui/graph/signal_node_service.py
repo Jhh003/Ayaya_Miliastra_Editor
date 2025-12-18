@@ -27,7 +27,8 @@ from engine.graph.common import (
     SIGNAL_LISTEN_STATIC_OUTPUTS,
     SIGNAL_NAME_PORT_NAME,
 )
-from engine.signal import get_default_signal_binding_service, compute_signal_schema_hash
+from engine.signal import compute_signal_schema_hash
+from engine.graph.semantic import GraphSemanticPass, SEMANTIC_SIGNAL_ID_CONSTANT_KEY
 from app.ui.graph.logic.signal_logic import (
     build_signal_node_def_proxy,
     plan_signal_port_sync,
@@ -81,8 +82,7 @@ def build_signal_node_def_proxy_for_scene(
     if not signals_dict:
         return None
 
-    binding_service = get_default_signal_binding_service()
-    bound_signal_id = binding_service.get_node_signal_id(scene.model, node.id)
+    bound_signal_id = _get_bound_signal_id_for_node(scene, node_id=str(node.id))
     context = resolve_signal_binding(node, signals_dict, bound_signal_id)
     if context is None:
         return None
@@ -172,8 +172,7 @@ def bind_signal_for_node(scene: "GraphScene", node_id: str) -> None:
     if not signals_dict:
         return
 
-    binding_service = get_default_signal_binding_service()
-    current_signal_id = binding_service.get_node_signal_id(scene.model, node_id) or ""
+    current_signal_id = _get_bound_signal_id_for_node(scene, node_id=node_id) or ""
 
     from app.ui.dialogs.signal_picker_dialog import SignalPickerDialog
 
@@ -194,8 +193,11 @@ def bind_signal_for_node(scene: "GraphScene", node_id: str) -> None:
     if not selected_signal_id or selected_signal_id == current_signal_id:
         return
 
-    # 写入绑定
-    binding_service.set_node_signal_id(scene.model, node_id, selected_signal_id)
+    # 绑定“意图”写在节点本体（隐藏稳定 ID + 可见信号名常量），
+    # 语义元数据（metadata["signal_bindings"]）由 GraphSemanticPass 统一覆盖式生成。
+    if not isinstance(node.input_constants, dict):
+        node.input_constants = {}
+    node.input_constants[SEMANTIC_SIGNAL_ID_CONSTANT_KEY] = selected_signal_id
 
     # 同步“信号名”输入常量（若存在）
     signal_config = signals_dict.get(selected_signal_id)
@@ -211,6 +213,7 @@ def bind_signal_for_node(scene: "GraphScene", node_id: str) -> None:
 
     # 基于信号定义尝试补全动态端口
     sync_signal_ports_for_node(scene, node_id, signals_dict)
+    GraphSemanticPass.apply(scene.model)
 
     on_changed = getattr(scene, "on_data_changed", None)
     if callable(on_changed):
@@ -255,6 +258,7 @@ def on_signals_updated_from_manager(scene: "GraphScene") -> None:
             affected_node_ids.append(node_id)
 
     if affected_node_ids:
+        GraphSemanticPass.apply(scene.model)
         scene._refresh_all_ports(affected_node_ids)
         on_changed = getattr(scene, "on_data_changed", None)
         if callable(on_changed):
@@ -277,8 +281,7 @@ def sync_signal_ports_for_node(
     if not node:
         return
 
-    binding_service = get_default_signal_binding_service()
-    bound_signal_id = binding_service.get_node_signal_id(scene.model, node_id)
+    bound_signal_id = _get_bound_signal_id_for_node(scene, node_id=node_id)
     context = resolve_signal_binding(node, signals_dict, bound_signal_id)
     if context is None:
         return
@@ -286,7 +289,9 @@ def sync_signal_ports_for_node(
     plan = plan_signal_port_sync(node, context)
 
     if plan.bound_signal_id and plan.bound_signal_id != bound_signal_id:
-        binding_service.set_node_signal_id(scene.model, node_id, plan.bound_signal_id)
+        if not isinstance(node.input_constants, dict):
+            node.input_constants = {}
+        node.input_constants[SEMANTIC_SIGNAL_ID_CONSTANT_KEY] = plan.bound_signal_id
 
     if plan.signal_name_constant:
         has_signal_name_port = any(
@@ -324,6 +329,19 @@ def sync_signal_ports_for_node(
                 continue
             # 复用 SceneModelOpsMixin.add_edge_item 的 UI 创建逻辑
             scene.add_edge_item(edge)
+
+
+def _get_bound_signal_id_for_node(scene: "GraphScene", *, node_id: str) -> Optional[str]:
+    """从节点本体（隐藏 ID）或现有 metadata bindings 中获取稳定的信号 ID。"""
+    node = scene.model.nodes.get(node_id)
+    if node is None:
+        return None
+    constants = getattr(node, "input_constants", {}) or {}
+    if isinstance(constants, dict):
+        stable_id = str(constants.get(SEMANTIC_SIGNAL_ID_CONSTANT_KEY) or "").strip()
+        if stable_id:
+            return stable_id
+    return scene.model.get_node_signal_id(node_id)
 
 
 __all__ = [

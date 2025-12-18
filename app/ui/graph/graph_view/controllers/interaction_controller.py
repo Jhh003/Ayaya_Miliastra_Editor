@@ -255,7 +255,8 @@ class GraphViewInteractionController:
                         scene_pos = self.view.mapToScene(event.pos())
                         item = scene.itemAt(scene_pos, QtGui.QTransform())
 
-                        from app.ui.graph.graph_scene import NodeGraphicsItem, EdgeGraphicsItem
+                        from app.ui.graph.items.node_item import NodeGraphicsItem
+                        from app.ui.graph.items.edge_item import EdgeGraphicsItem
 
                         if isinstance(item, NodeGraphicsItem):
                             node_id = getattr(item.node, "id", "")
@@ -288,7 +289,8 @@ class GraphViewInteractionController:
         Returns:
             True 表示事件已处理
         """
-        from app.ui.graph.graph_scene import NodeGraphicsItem, EdgeGraphicsItem
+        from app.ui.graph.items.node_item import NodeGraphicsItem
+        from app.ui.graph.items.edge_item import EdgeGraphicsItem
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             scene_pos = self.view.mapToScene(event.pos())
             item = self.view.scene().itemAt(scene_pos, QtGui.QTransform())
@@ -440,6 +442,17 @@ class GraphViewInteractionController:
         self._saved_cache_mode = self.view.cacheMode()
         self._saved_update_mode = self.view.viewportUpdateMode()
         self._saved_render_hints_pan = self.view.renderHints()
+
+        # 关键：平移期间禁用背景缓存。
+        #
+        # 在部分 Windows 环境下，`CacheBackground` 配合 `ScrollHandDrag` 的滚动像素优化会让网格出现
+        # “分块错位/陈旧像素”观感（类似老系统拖拽窗口时的背景撕裂）。
+        #
+        # 这里仅在拖拽期间关闭缓存：
+        # - 视觉上网格始终由 SceneOverlayMixin.drawBackground 按当前视口实时绘制，避免错位；
+        # - 性能上仍保留 MinimalViewportUpdate（默认），避免将平移退化为全量重绘。
+        self.view.setCacheMode(QtWidgets.QGraphicsView.CacheModeFlag.CacheNone)
+
         # 性能：拖拽期间关闭抗锯齿与平滑像素缩放，降低大图重绘成本
         self.view.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, False)
         self.view.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)

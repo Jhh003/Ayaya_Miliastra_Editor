@@ -120,7 +120,10 @@ class GraphDataService:
         return references
 
     def invalidate_graph(self, graph_id: Optional[str] = None) -> None:
-        """失效本 service 内部缓存（不包含进程内 payload 缓存）。"""
+        """失效图相关的所有内存缓存（GraphConfig/GraphModel/引用缓存 + 进程内 payload 缓存）。
+
+        设计目标：提供“一句就能清干净”的集中失效入口，避免 UI/后台重载/预览/执行各自清一段缓存链条而分叉。
+        """
         with self._lock:
             if graph_id:
                 self._graph_config_cache.pop(graph_id, None)
@@ -132,6 +135,13 @@ class GraphDataService:
                 self._graph_model_cache.clear()
                 self._reference_cache.clear()
                 self._graph_membership_cache.clear()
+
+        # payload 缓存为进程级共享（模块全局），因此这里必须一起失效，
+        # 否则会出现“某入口清了 GraphModel/GraphConfig，但预览/执行仍复用旧 payload”的回退。
+        if graph_id:
+            drop_graph_data_for_graph(graph_id)
+        else:
+            clear_all_graph_data()
 
     def _load_graph_config(self, graph_id: str) -> Optional[GraphConfig]:
         with self._lock:

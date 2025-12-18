@@ -7,11 +7,13 @@ from .todo_generator import TodoGenerator
 from .todo_graph_task_generator import TodoGraphTaskGenerator
 from .view_modes import ViewMode, VIEW_MODE_CONFIG, RIGHT_PANEL_TABS
 from .ui_navigation import UiNavigationRequest
+from .edit_session_capabilities import EditSessionCapabilities
 
 __all__ = [
     "TodoItem",
     "TodoGenerator",
     "TodoGraphTaskGenerator",
+    "EditSessionCapabilities",
     "ViewMode",
     "VIEW_MODE_CONFIG",
     "RIGHT_PANEL_TABS",

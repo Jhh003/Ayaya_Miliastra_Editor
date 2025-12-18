@@ -61,6 +61,25 @@ class DataNodePlacer:
         self._place_from_instructions(placement_instructions)
         # 放置链枚举阶段未覆盖的本块局部数据节点
         self._place_downstream_data_nodes_by_ownership()
+        # 兜底：确保全局复制阶段指定归属到本块的纯数据节点都能被放置进 data_nodes_in_order，
+        # 否则会出现“节点存在但不属于任何块/没有坐标”的 UI 表现（常见于仅由输出引脚消费的尾部纯数据链）。
+        self._place_remaining_block_data_nodes()
+
+    def _place_remaining_block_data_nodes(self) -> None:
+        """兜底放置：把 block_data_nodes 中尚未放置的纯数据节点全部加入当前块。"""
+        if not getattr(self.context, "_block_data_nodes_set", False):
+            return
+        remaining = sorted(list(getattr(self.context, "block_data_nodes", set()) or set()))
+        for node_id in remaining:
+            if not isinstance(node_id, str) or node_id == "":
+                continue
+            if node_id in self.context.placed_data_nodes:
+                continue
+            if not self.context.is_pure_data_node(node_id):
+                continue
+            # block_data_nodes 已经是“应该放在本块”的最终集合；这里不再走 ownership 判定，
+            # 只要节点仍在模型里即可放置。
+            self._place_current_data_node(node_id)
 
     def _place_from_instructions(self, instructions: List["ChainPlacementInfo"]) -> None:
         """基于链枚举器输出的结构化指令放置数据节点"""

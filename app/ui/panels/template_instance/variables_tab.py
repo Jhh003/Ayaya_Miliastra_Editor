@@ -3,30 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from PyQt6 import QtCore, QtWidgets
 
 from engine.graph.models.package_model import VariableConfig
 from engine.graph.models.entity_templates import get_all_variable_types
-from engine.resources.level_variable_schema_view import (
-    get_default_level_variable_schema_view,
-)
 from engine.utils.name_utils import generate_unique_name
 from app.ui.dialogs.struct_definition_types import (
-    is_struct_type,
-    normalize_canonical_type_name,
     param_type_to_canonical,
 )
-from app.ui.dialogs.struct_list_item_dialog import StructListItemEditDialog
 from app.ui.dialogs.variable_edit_dialogs import EntityVariableEditDialog
 from app.ui.foundation.dialog_utils import ask_yes_no_dialog, show_warning_dialog
 from app.ui.foundation.theme_manager import Sizes, ThemeManager, Colors
 from app.ui.foundation.toast_notification import ToastNotification
 from app.ui.foundation.toolbar_utils import apply_standard_toolbar
 from app.ui.panels.template_instance.tab_base import TemplateInstanceTabBase
-from app.ui.widgets.two_row_field_table_widget import TwoRowFieldTableWidget
+from app.ui.panels.template_instance.variables_external_loader import (
+    load_external_variable_configs,
+)
+from app.ui.panels.template_instance.variables_table_widget import (
+    VariablesTwoRowFieldTableWidget,
+)
 
 
 @dataclass(frozen=True)
@@ -36,368 +34,6 @@ class VariableRow:
     prefix: str = ""
     foreground: Optional[str] = None
     background: Optional[str] = None
-
-
-class StructListEditorWidget(QtWidgets.QWidget):
-    """
-    自定义变量用的“结构体列表”值编辑组件。
-
-    约定的数据结构：
-    {
-        "struct_id": str,                 # 选中的基础结构体 ID
-        "items": [
-            {
-                "name": str,             # 可选的人类可读名称（例如关卡ID摘要），目前仅用于列表展示
-                "fields": {              # 按字段名存放当前条目的数据值（全部以字符串形式保存）
-                    "<字段名>": "<值>",
-                    ...
-                },
-            },
-            ...
-        ],
-    }
-    """
-
-    value_changed = QtCore.pyqtSignal()
-
-    def __init__(
-        self,
-        *,
-        struct_id_options: Sequence[str],
-        resource_manager: Optional[object],
-        value: Any,
-        parent: Optional[QtWidgets.QWidget] = None,
-    ) -> None:
-        super().__init__(parent)
-        self._resource_manager = resource_manager
-        self._struct_id_options: list[str] = [
-            str(text).strip() for text in struct_id_options if str(text).strip()
-        ]
-        self._struct_id: str = ""
-        self._items: list[dict[str, Any]] = []
-
-        self._setup_ui()
-        self._apply_struct_id_options()
-        self._load_value(value)
-
-    # ------------------------------------------------------------------ UI 组装
-
-    def _setup_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(
-            Sizes.SPACING_SMALL,
-            Sizes.SPACING_SMALL,
-            Sizes.SPACING_SMALL,
-            Sizes.SPACING_SMALL,
-        )
-        layout.setSpacing(Sizes.SPACING_SMALL)
-
-        toolbar = QtWidgets.QHBoxLayout()
-        apply_standard_toolbar(toolbar)
-
-        struct_label = QtWidgets.QLabel("结构体:", self)
-        self.struct_combo = QtWidgets.QComboBox(self)
-        self.struct_combo.setMinimumWidth(200)
-        self.struct_combo.setMinimumHeight(Sizes.INPUT_HEIGHT)
-
-        toolbar.addWidget(struct_label)
-        toolbar.addWidget(self.struct_combo)
-        toolbar.addStretch(1)
-
-        self.add_button = QtWidgets.QPushButton("+ 添加条目", self)
-        self.remove_button = QtWidgets.QPushButton("删除", self)
-        self.edit_button = QtWidgets.QPushButton("编辑", self)
-
-        for button in (self.add_button, self.remove_button, self.edit_button):
-            button.setMinimumHeight(Sizes.BUTTON_HEIGHT)
-            button.setStyleSheet(ThemeManager.button_style())
-
-        toolbar.addWidget(self.add_button)
-        toolbar.addWidget(self.remove_button)
-        toolbar.addWidget(self.edit_button)
-
-        layout.addLayout(toolbar)
-
-        self.list_widget = QtWidgets.QListWidget(self)
-        self.list_widget.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
-        )
-        self.list_widget.setAlternatingRowColors(True)
-        self.list_widget.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.list_widget.setStyleSheet(ThemeManager.list_style())
-        layout.addWidget(self.list_widget, 1)
-
-        self.hint_label = QtWidgets.QLabel(
-            "请选择上方的结构体后再添加列表条目（每一条都使用同一结构体的数据结构）。", self
-        )
-        self.hint_label.setWordWrap(True)
-        self.hint_label.setStyleSheet(ThemeManager.subtle_info_style())
-        layout.addWidget(self.hint_label)
-
-        self.struct_combo.currentIndexChanged.connect(self._on_struct_changed)
-        self.add_button.clicked.connect(self._on_add_item)
-        self.remove_button.clicked.connect(self._on_remove_item)
-        self.edit_button.clicked.connect(self._on_edit_item)
-        self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
-
-        self._update_buttons()
-
-    def _apply_struct_id_options(self) -> None:
-        self.struct_combo.blockSignals(True)
-        self.struct_combo.clear()
-        self.struct_combo.addItem("（请选择结构体）", "")
-        for struct_id in self._struct_id_options:
-            self.struct_combo.addItem(struct_id, struct_id)
-        self.struct_combo.blockSignals(False)
-
-    # ------------------------------------------------------------------ 数据加载与导出
-
-    def _load_value(self, value: Any) -> None:
-        self._struct_id = ""
-        self._items = []
-
-        if isinstance(value, Mapping):
-            raw_struct_id = value.get("struct_id")
-            if isinstance(raw_struct_id, str):
-                self._struct_id = raw_struct_id.strip()
-            raw_items = value.get("items")
-            if isinstance(raw_items, list):
-                for entry in raw_items:
-                    if not isinstance(entry, Mapping):
-                        continue
-                    name_value = entry.get("name", "")
-                    name_text = str(name_value).strip() if isinstance(name_value, str) else ""
-                    fields_value = entry.get("fields", {})
-                    fields_dict: dict[str, Any] = {}
-                    if isinstance(fields_value, Mapping):
-                        for key, field_val in fields_value.items():
-                            key_text = str(key).strip()
-                            if not key_text:
-                                continue
-                            fields_dict[key_text] = field_val
-                    self._items.append(
-                        {
-                            "name": name_text,
-                            "fields": fields_dict,
-                        }
-                    )
-
-        if self._struct_id:
-            index = self.struct_combo.findData(self._struct_id)
-            if index < 0:
-                # 如果当前结构体 ID 不在候选列表中，则追加一项以避免用户丢失配置
-                self.struct_combo.addItem(self._struct_id, self._struct_id)
-                index = self.struct_combo.findData(self._struct_id)
-            if index >= 0:
-                self.struct_combo.setCurrentIndex(index)
-
-        self._rebuild_list()
-        self._update_buttons()
-
-    def get_value(self) -> dict[str, Any]:
-        """导出当前结构体列表值。"""
-        items: list[dict[str, Any]] = []
-        for index, entry in enumerate(self._items):
-            name_value = entry.get("name", "")
-            name_text = str(name_value).strip() if isinstance(name_value, str) else ""
-            fields_value = entry.get("fields", {})
-            fields_dict: dict[str, Any] = {}
-            if isinstance(fields_value, Mapping):
-                for key, field_val in fields_value.items():
-                    key_text = str(key).strip()
-                    if not key_text:
-                        continue
-                    fields_dict[key_text] = field_val
-            items.append(
-                {
-                    "name": name_text or f"条目{index + 1}",
-                    "fields": fields_dict,
-                }
-            )
-
-        return {
-            "struct_id": self._struct_id,
-            "items": items,
-        }
-
-    # ------------------------------------------------------------------ 列表与按钮状态
-
-    def _rebuild_list(self) -> None:
-        self.list_widget.clear()
-        for index, entry in enumerate(self._items):
-            display_text = self._build_item_display_text(index, entry)
-            item = QtWidgets.QListWidgetItem(display_text, self.list_widget)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, index)
-
-    def _build_item_display_text(self, index: int, entry: Mapping[str, Any]) -> str:
-        name_value = entry.get("name", "")
-        name_text = str(name_value).strip() if isinstance(name_value, str) else ""
-        fields_value = entry.get("fields", {})
-        summary = ""
-        if isinstance(fields_value, Mapping) and fields_value:
-            for key, field_val in fields_value.items():
-                key_text = str(key).strip()
-                if not key_text:
-                    continue
-                summary = f"{key_text}={field_val}"
-                break
-        if not name_text and not summary:
-            return f"{index + 1}"
-        if name_text and not summary:
-            return f"{index + 1}  {name_text}"
-        if not name_text and summary:
-            return f"{index + 1}  {summary}"
-        return f"{index + 1}  {name_text}  ({summary})"
-
-    def _update_buttons(self) -> None:
-        has_struct = bool(self._struct_id)
-        has_selection = self.list_widget.currentRow() >= 0
-        has_items = bool(self._items)
-
-        self.add_button.setEnabled(has_struct)
-        self.remove_button.setEnabled(has_struct and has_selection and has_items)
-        self.edit_button.setEnabled(has_struct and has_selection and has_items)
-
-        if has_struct:
-            self.hint_label.setText(
-                "已选择结构体，使用下方列表维护结构体列表中的各个条目，双击或点击“编辑”可配置字段值。"
-            )
-        else:
-            self.hint_label.setText(
-                "请选择上方的结构体后再添加列表条目（每一条都使用同一结构体的数据结构）。"
-            )
-
-    # ------------------------------------------------------------------ 事件处理
-
-    def _on_struct_changed(self, index: int) -> None:
-        data = self.struct_combo.itemData(index)
-        if isinstance(data, str):
-            self._struct_id = data.strip()
-        else:
-            self._struct_id = ""
-        self._update_buttons()
-        self.value_changed.emit()
-
-    def _on_add_item(self) -> None:
-        if not self._struct_id:
-            return
-        new_entry = {
-            "name": "",
-            "fields": {},
-        }
-        self._items.append(new_entry)
-        self._rebuild_list()
-        last_row = self.list_widget.count() - 1
-        if last_row >= 0:
-            self.list_widget.setCurrentRow(last_row)
-        self._update_buttons()
-        self.value_changed.emit()
-
-    def _on_remove_item(self) -> None:
-        row = self.list_widget.currentRow()
-        if row < 0 or row >= len(self._items):
-            return
-        del self._items[row]
-        self._rebuild_list()
-        if self._items and row >= 0:
-            self.list_widget.setCurrentRow(min(row, len(self._items) - 1))
-        self._update_buttons()
-        self.value_changed.emit()
-
-    def _on_edit_item(self) -> None:
-        row = self.list_widget.currentRow()
-        if row < 0 or row >= len(self._items):
-            return
-        self._edit_item_at_index(row)
-
-    def _on_item_double_clicked(self, item: QtWidgets.QListWidgetItem) -> None:
-        index_value = item.data(QtCore.Qt.ItemDataRole.UserRole)
-        if isinstance(index_value, int):
-            self._edit_item_at_index(index_value)
-
-    def _edit_item_at_index(self, index: int) -> None:
-        if not self._struct_id:
-            return
-        if self._resource_manager is None:
-            return
-        entry = self._items[index]
-        fields_value = entry.get("fields", {})
-        if isinstance(fields_value, Mapping):
-            current_fields: dict[str, Any] = dict(fields_value)
-        else:
-            current_fields = {}
-
-        dialog = StructListItemEditDialog(
-            struct_id=self._struct_id,
-            resource_manager=self._resource_manager,
-            initial_values=current_fields,
-            parent=self,
-        )
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
-
-        updated_fields = dialog.get_result()
-        entry["fields"] = updated_fields
-        self._items[index] = entry
-        self._rebuild_list()
-        self._update_buttons()
-        self.value_changed.emit()
-
-
-class VariablesTwoRowFieldTableWidget(TwoRowFieldTableWidget):
-    """
-    自定义变量标签页专用的两行结构字段表格。
-
-    在保留列表/字典两行结构行为的基础上，为“结构体列表”类型提供专用的列表编辑组件，
-    支持选择基础结构体并为每个条目配置字段值。
-    """
-
-    def __init__(
-        self,
-        supported_types: Sequence[str],
-        parent: Optional[QtWidgets.QWidget] = None,
-    ) -> None:
-        super().__init__(supported_types, parent)
-        self._resource_manager: Optional[object] = None
-
-    def set_resource_manager(self, resource_manager: Optional[object]) -> None:
-        self._resource_manager = resource_manager
-
-    def _create_value_cell_widget(
-        self,
-        type_name: str,
-        value: Any,
-        readonly: bool = False,
-    ) -> QtWidgets.QWidget:
-        canonical_type_name = normalize_canonical_type_name(type_name or "")
-        if canonical_type_name == "结构体列表":
-            editor = StructListEditorWidget(
-                struct_id_options=self._struct_id_options,
-                resource_manager=self._resource_manager,
-                value=value,
-                parent=self.table,
-            )
-            if readonly:
-                editor.setEnabled(False)
-            editor.value_changed.connect(self._on_content_changed)
-            return editor
-
-        return super()._create_value_cell_widget(type_name, value, readonly)
-
-    def _extract_value_from_widget(
-        self,
-        type_name: str,
-        value_widget: Optional[QtWidgets.QWidget],
-    ) -> Any:
-        canonical_type_name = normalize_canonical_type_name(type_name or "")
-        if canonical_type_name == "结构体列表":
-            if isinstance(value_widget, StructListEditorWidget):
-                return value_widget.get_value()
-            if isinstance(value_widget, QtWidgets.QWidget):
-                inner_editor = value_widget.findChild(StructListEditorWidget)
-                if isinstance(inner_editor, StructListEditorWidget):
-                    return inner_editor.get_value()
-        return super()._extract_value_from_widget(type_name, value_widget)
 
 
 class VariablesTab(TemplateInstanceTabBase):
@@ -570,83 +206,7 @@ class VariablesTab(TemplateInstanceTabBase):
         if not ref_text:
             return []
 
-        normalized_ref = str(ref_text).strip()
-        if not normalized_ref:
-            return []
-
-        # 统一从代码级关卡变量 Schema 视图中解析外部变量定义，避免在 UI 层直接 import 代码模块。
-        schema_view = get_default_level_variable_schema_view()
-        all_variables = schema_view.get_all_variables()
-
-        # 路径分隔符一律归一化为 "/"，便于与 source_path 对齐。
-        normalized_ref = normalized_ref.replace("\\", "/")
-
-        results: list[VariableConfig] = []
-
-        for payload in all_variables.values():
-            if not isinstance(payload, dict):
-                continue
-
-            source_path_value = payload.get("source_path")
-            source_stem_value = payload.get("source_stem")
-            metadata_value = payload.get("metadata", {})
-
-            source_candidates: list[str] = []
-
-            if isinstance(source_path_value, str):
-                source_candidates.append(source_path_value.strip())
-
-            if isinstance(metadata_value, dict):
-                metadata_source = metadata_value.get("source_path")
-                if isinstance(metadata_source, str):
-                    source_candidates.append(metadata_source.strip())
-
-            if isinstance(source_stem_value, str):
-                source_candidates.append(source_stem_value.strip())
-
-            matched = False
-            for candidate in source_candidates:
-                candidate_text = candidate.replace("\\", "/")
-                if not candidate_text:
-                    continue
-
-                # 精确匹配完整相对路径（例如 自定义变量/forge_hero_player_template_variables.py）
-                if candidate_text == normalized_ref:
-                    matched = True
-                    break
-
-                # 退化为仅按文件名（不含扩展名）匹配，允许 metadata.custom_variable_file
-                # 直接填写“ID 风格”的文件名（例如 forge_hero_player_template_variables）。
-                candidate_stem = Path(candidate_text).stem
-                if candidate_stem == normalized_ref:
-                    matched = True
-                    break
-
-            if not matched:
-                continue
-
-            name_value = payload.get("variable_name", payload.get("name", ""))
-            type_value = payload.get("variable_type")
-            default_value = payload.get("default_value")
-            description_value = payload.get("description", "")
-
-            if not isinstance(name_value, str) or not isinstance(type_value, str):
-                continue
-
-            var_config = VariableConfig(
-                name=name_value,
-                variable_type=type_value,
-                default_value=default_value,
-                description=str(description_value) if description_value is not None else "",
-            )
-            results.append(var_config)
-
-        return results
-
-    def _get_workspace_root(self) -> Path:
-        if self.resource_manager and hasattr(self.resource_manager, "workspace_path"):
-            return Path(self.resource_manager.workspace_path)
-        return Path(__file__).resolve().parents[3]
+        return load_external_variable_configs(ref_text)
 
     def _add_variable(self) -> None:
         """直接添加一个默认变量到表格中，让用户内联编辑。"""
@@ -771,12 +331,6 @@ class VariablesTab(TemplateInstanceTabBase):
         # 获取原始变量行列表，用于比对来源与检测删除
         all_rows = list(self._iter_variable_rows())
 
-        # 调试输出：帮助排查“右键删除字段没生效”的问题
-        print(
-            "[VariablesTab] _on_variables_changed: "
-            f"object_type={self.object_type!r}, original_count={len(all_rows)}, field_count={len(fields)}"
-        )
-
         # 优先处理“删除字段”场景：当表格行数减少时，通过名称差集找到被删除的变量，
         # 并复用统一的删除逻辑（包含继承/覆写提示）。
         if len(fields) < len(all_rows):
@@ -789,10 +343,6 @@ class VariablesTab(TemplateInstanceTabBase):
                     break
 
             if deleted_row is not None:
-                print(
-                    "[VariablesTab] detected deleted variable: "
-                    f"name={deleted_row.variable.name!r}, source={deleted_row.source!r}"
-                )
                 self._perform_variable_deletion(deleted_row)
                 return
 

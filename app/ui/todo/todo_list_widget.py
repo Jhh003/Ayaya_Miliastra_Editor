@@ -34,6 +34,7 @@ from app.ui.todo.todo_config import LayoutConstants, TodoStyles
 from app.ui.todo.todo_navigation_controller import TodoNavigationController
 from app.ui.todo.todo_rich_item_delegate import RichTextItemDelegate
 from app.ui.todo.todo_list_orchestrator import TodoListOrchestrator
+from app.ui.todo.todo_ui_context import TodoUiContext
 
 
 class TodoListWidget(QtWidgets.QWidget):
@@ -55,6 +56,14 @@ class TodoListWidget(QtWidgets.QWidget):
         # 运行时监控窗口引用（供桥接层读取）
         self._monitor_window = None
 
+        # 子组件引用（由 orchestrator 统一创建）
+        self.runtime_state = None
+        self.tree_manager = None
+        self.preview_panel = None
+        self.detail_panel = None
+        self.executor_bridge = None
+        self._context_menu = None
+
         # 全局热键管理器
         self.hotkey_manager = GlobalHotkeyManager(self)
         self.nav_controller = TodoNavigationController(self)
@@ -75,7 +84,12 @@ class TodoListWidget(QtWidgets.QWidget):
         self._setup_ui()
 
         # 将领域 wiring 与子组件组装集中到编排层
-        self._orchestrator = TodoListOrchestrator(self)
+        self._ui_context = TodoUiContext(self)
+        self._orchestrator = TodoListOrchestrator(self._ui_context)
+
+    @property
+    def ui_context(self) -> TodoUiContext:
+        return self._ui_context
     
     def _setup_ui(self):
         """设置UI"""
@@ -250,44 +264,34 @@ class TodoListWidget(QtWidgets.QWidget):
 
     # 编辑请求桥接：供 preview_panel 调用
     def _open_graph_in_editor(self, graph_id: str, graph_data: dict, container: object) -> None:
-        if not self.main_window:
-            return
-        if self.current_todo_id and self.current_detail_info and hasattr(self.main_window, 'register_graph_editor_todo_context'):
-            current_todo = self._get_todo_by_id(self.current_todo_id)
-            todo_title = current_todo.title if current_todo else ""
-            self.main_window.register_graph_editor_todo_context(self.current_todo_id, self.current_detail_info, todo_title)
-        if hasattr(self.main_window, 'nav_coordinator'):
-            from PyQt6 import QtCore as _QtCore
-            _QtCore.QTimer.singleShot(30, lambda: self.main_window.nav_coordinator.open_graph.emit(graph_id, graph_data, container))
-        elif hasattr(self.main_window, 'graph_controller'):
-            self.main_window.graph_controller.open_graph_for_editing(graph_id, graph_data, container)
+        self.ui_context.open_graph_in_editor(graph_id, graph_data, container)
 
     # === 工具：统一以 TreeManager 数据源为准 ===
     def _get_todo_by_id(self, todo_id: str) -> Optional[TodoItem]:
-        if hasattr(self, "tree_manager") and hasattr(self.tree_manager, "todo_map"):
-            return self.tree_manager.todo_map.get(todo_id)
-        return None
+        if self.tree_manager is None:
+            return None
+        return self.tree_manager.todo_map.get(todo_id)
 
     @property
     def todos(self) -> List[TodoItem]:
         """对外暴露的 Todo 列表视图：统一透传 TreeManager 的权威数据。"""
-        if hasattr(self, "tree_manager") and hasattr(self.tree_manager, "todos"):
-            return self.tree_manager.todos
-        return []
+        if self.tree_manager is None:
+            return []
+        return self.tree_manager.todos
 
     @property
     def todo_map(self) -> Dict[str, TodoItem]:
         """对外暴露的 todo_id → TodoItem 映射：统一透传 TreeManager 的权威数据。"""
-        if hasattr(self, "tree_manager") and hasattr(self.tree_manager, "todo_map"):
-            return self.tree_manager.todo_map
-        return {}
+        if self.tree_manager is None:
+            return {}
+        return self.tree_manager.todo_map
 
     @property
     def todo_states(self) -> Dict[str, bool]:
         """对外暴露的完成状态映射：统一透传 TreeManager 维护的状态字典。"""
-        if hasattr(self, "tree_manager") and hasattr(self.tree_manager, "todo_states"):
-            return self.tree_manager.todo_states
-        return {}
+        if self.tree_manager is None:
+            return {}
+        return self.tree_manager.todo_states
 
     def has_loaded_todos(self) -> bool:
         """是否已加载过任务清单。"""

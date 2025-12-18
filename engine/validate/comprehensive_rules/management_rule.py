@@ -49,6 +49,8 @@ def _validate_layout_widget_templates(management) -> List[ValidationIssue]:
             widget_name = widget.get("name", widget.get("id", "未命名控件"))
             detail = {
                 "type": "management_ui_layout",
+                "management_section_key": "ui_control_groups",
+                "management_item_id": layout_id,
                 "layout_id": layout_id,
                 "widget_name": widget_name,
                 "template_id": template_id,
@@ -80,6 +82,8 @@ def _validate_level_variables(management) -> List[ValidationIssue]:
         variable_name = payload.get("name", variable_id)
         detail = {
             "type": "management_level_variable",
+            "management_section_key": "variable",
+            "management_item_id": variable_id,
             "variable_id": variable_id,
             "variable_name": variable_name,
         }

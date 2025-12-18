@@ -111,29 +111,101 @@ class HighlightService:
         """
         if not view.scene():
             return
-        
-        # 设置焦点节点和连线为正常透明度，其他为半透明
-        for node_id, node_item in view.scene().node_items.items():
-            if node_id in focused_node_ids:
-                node_item.setOpacity(1.0)
-            else:
-                node_item.setOpacity(0.3)
-        
-        for edge_id, edge_item in view.scene().edge_items.items():
-            if edge_id in focused_edge_ids:
-                edge_item.setOpacity(1.0)
-            else:
-                edge_item.setOpacity(0.3)
+
+        scene = view.scene()
+        node_items = getattr(scene, "node_items", {}) or {}
+        edge_items = getattr(scene, "edge_items", {}) or {}
+
+        focused_node_set = {
+            str(node_identifier)
+            for node_identifier in (focused_node_ids or [])
+            if node_identifier is not None and str(node_identifier)
+        }
+        focused_edge_set = {
+            str(edge_identifier)
+            for edge_identifier in (focused_edge_ids or [])
+            if edge_identifier is not None and str(edge_identifier)
+        }
+
+        # 差量更新：避免每次调用都遍历全图导致交互卡顿
+        old_active = bool(getattr(scene, "_opacity_dim_mode_active", False))
+        old_node_count = int(getattr(scene, "_opacity_dim_node_count", -1))
+        old_edge_count = int(getattr(scene, "_opacity_dim_edge_count", -1))
+        old_focused_nodes = set(getattr(scene, "_opacity_dim_focused_node_ids", set()) or set())
+        old_focused_edges = set(getattr(scene, "_opacity_dim_focused_edge_ids", set()) or set())
+
+        new_node_count = len(node_items)
+        new_edge_count = len(edge_items)
+
+        need_full_update = (
+            (not old_active)
+            or old_node_count != new_node_count
+            or old_edge_count != new_edge_count
+        )
+
+        if (
+            (not need_full_update)
+            and old_focused_nodes == focused_node_set
+            and old_focused_edges == focused_edge_set
+        ):
+            return
+
+        if need_full_update:
+            for node_id, node_item in node_items.items():
+                node_item.setOpacity(1.0 if node_id in focused_node_set else 0.3)
+            for edge_id, edge_item in edge_items.items():
+                edge_item.setOpacity(1.0 if edge_id in focused_edge_set else 0.3)
+        else:
+            nodes_to_dim = old_focused_nodes - focused_node_set
+            nodes_to_undim = focused_node_set - old_focused_nodes
+            for node_id in nodes_to_dim:
+                node_item = node_items.get(node_id)
+                if node_item is not None:
+                    node_item.setOpacity(0.3)
+            for node_id in nodes_to_undim:
+                node_item = node_items.get(node_id)
+                if node_item is not None:
+                    node_item.setOpacity(1.0)
+
+            edges_to_dim = old_focused_edges - focused_edge_set
+            edges_to_undim = focused_edge_set - old_focused_edges
+            for edge_id in edges_to_dim:
+                edge_item = edge_items.get(edge_id)
+                if edge_item is not None:
+                    edge_item.setOpacity(0.3)
+            for edge_id in edges_to_undim:
+                edge_item = edge_items.get(edge_id)
+                if edge_item is not None:
+                    edge_item.setOpacity(1.0)
+
+        scene._opacity_dim_mode_active = True
+        scene._opacity_dim_focused_node_ids = set(focused_node_set)
+        scene._opacity_dim_focused_edge_ids = set(focused_edge_set)
+        scene._opacity_dim_node_count = new_node_count
+        scene._opacity_dim_edge_count = new_edge_count
     
     @staticmethod
     def restore_all_opacity(view: "GraphView") -> None:
         """恢复所有元素的透明度"""
         if not view.scene():
             return
-        
-        for node_item in view.scene().node_items.values():
+
+        scene = view.scene()
+        if not bool(getattr(scene, "_opacity_dim_mode_active", False)):
+            return
+
+        node_items = getattr(scene, "node_items", {}) or {}
+        edge_items = getattr(scene, "edge_items", {}) or {}
+
+        for node_item in node_items.values():
             node_item.setOpacity(1.0)
-        
-        for edge_item in view.scene().edge_items.values():
+
+        for edge_item in edge_items.values():
             edge_item.setOpacity(1.0)
+
+        scene._opacity_dim_mode_active = False
+        scene._opacity_dim_focused_node_ids = set()
+        scene._opacity_dim_focused_edge_ids = set()
+        scene._opacity_dim_node_count = len(node_items)
+        scene._opacity_dim_edge_count = len(edge_items)
 

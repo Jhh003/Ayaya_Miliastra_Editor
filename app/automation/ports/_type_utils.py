@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-类型推断等通用工具（仅供 core.automation 内部使用）。
+类型推断等通用工具（仅供 app.automation 内部使用）。
 """
 
 from __future__ import annotations

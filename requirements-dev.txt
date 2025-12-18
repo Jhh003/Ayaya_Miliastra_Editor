@@ -1,0 +1,8 @@
+# 开发/测试依赖
+#
+# 安装方式：
+#   pip install -r requirements-dev.txt -c constraints.txt
+-r requirements.txt
+pytest==8.3.4
+
+

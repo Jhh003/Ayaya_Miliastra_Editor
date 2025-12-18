@@ -171,7 +171,14 @@ class UnclassifiedResourceView:
                     continue
                 data = self.resource_manager.load_resource(ResourceType.TEMPLATE, template_id)
                 if data:
-                    self._templates_cache[template_id] = TemplateConfig.deserialize(data)
+                    template_obj = TemplateConfig.deserialize(data)
+                    source_mtime = self.resource_manager.get_resource_file_mtime(
+                        ResourceType.TEMPLATE,
+                        str(template_id),
+                    )
+                    if source_mtime is not None:
+                        setattr(template_obj, "_source_mtime", float(source_mtime))
+                    self._templates_cache[template_id] = template_obj
         return self._templates_cache
 
     @property
@@ -184,7 +191,14 @@ class UnclassifiedResourceView:
                     continue
                 data = self.resource_manager.load_resource(ResourceType.INSTANCE, instance_id)
                 if data:
-                    self._instances_cache[instance_id] = InstanceConfig.deserialize(data)
+                    instance_obj = InstanceConfig.deserialize(data)
+                    source_mtime = self.resource_manager.get_resource_file_mtime(
+                        ResourceType.INSTANCE,
+                        str(instance_id),
+                    )
+                    if source_mtime is not None:
+                        setattr(instance_obj, "_source_mtime", float(source_mtime))
+                    self._instances_cache[instance_id] = instance_obj
         return self._instances_cache
 
     @property

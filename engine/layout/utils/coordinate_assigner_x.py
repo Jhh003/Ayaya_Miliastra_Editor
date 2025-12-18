@@ -95,7 +95,9 @@ def compute_data_x_positions(
     """
     data_x_positions: dict[str, float] = {}
 
-    # 为缺少链信息的数据节点准备列回退：靠在当前流程列的右侧
+    # 为缺少链信息的数据节点准备列回退：靠在当前流程列的右侧。
+    # 注意：这类节点往往只参与“输出组装”（例如 拼装字典/拼装列表），并不会被数据链枚举覆盖；
+    # 若简单按出现顺序递增分配，会导致块内数据边出现“回头线”。
     max_flow_column = max(flow_x_positions.values(), default=-1.0)
     next_fallback_slot = max_flow_column + 1.0 if flow_x_positions else 0.0
 
@@ -114,12 +116,66 @@ def compute_data_x_positions(
         context.node_slot_index[node_id] = int(slot)
         return slot
 
+    def _assign_fallback_slots_within_block_by_data_topology() -> Dict[str, float]:
+        """
+        为“无链信息”的纯数据节点分配稳定的回退列索引，并尽量保证：
+        - 若存在数据边 A -> B（且 A/B 均为无链节点），则 B 的列索引应 >= A 的列索引 + 1；
+        - 从而避免在同一块内出现明显的回头线。
+        """
+        fallback_nodes: List[str] = []
+        order_map: Dict[str, int] = {}
+        for index, data_id in enumerate(context.data_nodes_in_order):
+            chain_ids = context.data_chain_ids_by_node.get(data_id, [])
+            if chain_ids:
+                continue
+            fallback_nodes.append(data_id)
+            order_map[data_id] = index
+
+        if not fallback_nodes:
+            return {}
+
+        fallback_set: Set[str] = set(fallback_nodes)
+        adjacency_map: Dict[str, List[str]] = {node_id: [] for node_id in fallback_nodes}
+        parent_sets: Dict[str, Set[str]] = {node_id: set() for node_id in fallback_nodes}
+
+        for src_id in fallback_nodes:
+            for edge in context.get_data_out_edges(src_id) or []:
+                dst_id = getattr(edge, "dst_node", None)
+                if not isinstance(dst_id, str) or dst_id == "":
+                    continue
+                if dst_id not in fallback_set:
+                    continue
+                if not context.is_pure_data_node(dst_id):
+                    continue
+                if dst_id not in adjacency_map[src_id]:
+                    adjacency_map[src_id].append(dst_id)
+                parent_sets[dst_id].add(src_id)
+
+        levels = resolve_levels_with_parents(
+            fallback_nodes,
+            adjacency_provider=lambda node_id: adjacency_map.get(node_id, []),
+            parent_provider=lambda node_id: parent_sets.get(node_id, set()),
+            order_key=lambda node_id: order_map.get(node_id, 0),
+            default_level=0.0,
+        )
+        base = float(max_flow_column + 1.0 if flow_x_positions else 0.0)
+        resolved: Dict[str, float] = {}
+        for node_id in fallback_nodes:
+            resolved[node_id] = base + float(levels.get(node_id, 0.0))
+        return resolved
+
+    fallback_positions_by_topology = _assign_fallback_slots_within_block_by_data_topology()
+
     for data_id in context.data_nodes_in_order:
         chain_ids = context.data_chain_ids_by_node.get(data_id, [])
 
         if not chain_ids:
             # 没有链信息的数据节点，分配回退槽位（固定在流程列右侧依次递增）
-            slot_index = assign_fallback_slot(data_id)
+            if data_id in fallback_positions_by_topology:
+                slot_index = float(fallback_positions_by_topology[data_id])
+                context.node_slot_index[data_id] = int(slot_index)
+            else:
+                slot_index = assign_fallback_slot(data_id)
             data_x_positions[data_id] = slot_index
             continue
 

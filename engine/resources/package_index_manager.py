@@ -461,17 +461,59 @@ class PackageIndexManager:
         
         return package_id
     
-    def save_package_index(self, package_index: PackageIndex) -> None:
-        """保存存档索引
+    def save_package_index(
+        self,
+        package_index: PackageIndex,
+        *,
+        expected_mtime: float | None = None,
+        allow_overwrite_external: bool = False,
+    ) -> bool:
+        """保存存档索引（功能包索引 JSON）。
+
+        设计约定（VSCode 风格）：
+        - 当调用方提供 expected_mtime 且磁盘文件的 mtime 与之不一致时，视为“外部已修改”；
+        - 默认拒绝覆盖写入（返回 False），避免静默覆盖外部工具的改动；
+        - 若 allow_overwrite_external=True，则允许覆盖写入（返回 True）。
         
         Args:
             package_index: 存档索引对象
+            expected_mtime: 期望的磁盘版本（文件 mtime）
+            allow_overwrite_external: 是否允许覆盖外部修改
+
+        Returns:
+            True：本次确实完成写盘；False：检测到外部修改，已取消保存。
         """
         self._refresh_resource_names(package_index)
         package_index.updated_at = datetime.now().isoformat()
+
+        normalized_expected_mtime: float | None = None
+        if isinstance(expected_mtime, (int, float)) and float(expected_mtime) > 0:
+            normalized_expected_mtime = float(expected_mtime)
+        if normalized_expected_mtime is None:
+            source_mtime_candidate = getattr(package_index, "_source_mtime", None)
+            if isinstance(source_mtime_candidate, (int, float)) and float(source_mtime_candidate) > 0:
+                normalized_expected_mtime = float(source_mtime_candidate)
         
         # 使用name作为文件名
         index_file = self._get_package_file_path(package_index.package_id, package_index.name)
+
+        # 保存冲突检测：优先对“当前包ID的既有文件”做 mtime 对比，避免在 name 变更导致重命名时漏检。
+        existing_file = self._get_package_file_path(package_index.package_id)
+        if (
+            normalized_expected_mtime is not None
+            and not allow_overwrite_external
+            and existing_file.exists()
+        ):
+            current_mtime = float(existing_file.stat().st_mtime)
+            if abs(current_mtime - normalized_expected_mtime) >= 0.001:
+                log_info(
+                    "[SAVE-CONFLICT] 存档索引在磁盘上已变化，已阻止保存覆盖：package_id={} expected_mtime={} actual_mtime={} path={}",
+                    package_index.package_id,
+                    normalized_expected_mtime,
+                    current_mtime,
+                    str(existing_file),
+                )
+                return False
         
         # 删除旧文件（如果文件名改变了）
         if package_index.package_id in self.package_id_to_filename:
@@ -483,6 +525,10 @@ class PackageIndexManager:
         
         # 保存索引文件（原子写）
         atomic_write_json(index_file, package_index.serialize(), ensure_ascii=False, indent=2)
+
+        # 保存成功后刷新 source_mtime 基线，供后续保存冲突检测使用
+        if index_file.exists():
+            setattr(package_index, "_source_mtime", float(index_file.stat().st_mtime))
 
         # 单独保存 Todo 勾选状态到运行期状态目录
         self._save_todo_states(package_index)
@@ -499,6 +545,8 @@ class PackageIndexManager:
                 pkg_info["updated_at"] = package_index.updated_at
                 break
         self._save_packages_list_data(packages_data)
+
+        return True
     
     def load_package_index(self, package_id: str) -> Optional[PackageIndex]:
         """加载存档索引
@@ -524,6 +572,8 @@ class PackageIndexManager:
             data = json.load(file)
 
         package_index = PackageIndex.deserialize(data)
+        # 记录加载时的磁盘版本（mtime），供保存冲突检测使用
+        setattr(package_index, "_source_mtime", float(index_file.stat().st_mtime))
 
         # 加载或迁移 Todo 勾选状态到运行期状态目录：
         # - 首选 app/runtime/todo_states/<package_id>.json；

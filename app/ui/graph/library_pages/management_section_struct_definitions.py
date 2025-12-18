@@ -218,6 +218,14 @@ class StructDefinitionSection(BaseManagementSection):
                     count += 1
             if count:
                 return count
+        fields_entries = payload.get("fields")
+        if isinstance(fields_entries, Sequence):
+            count = 0
+            for entry in fields_entries:
+                if isinstance(entry, Mapping):
+                    count += 1
+            if count:
+                return count
         members_entries = payload.get("members")
         if isinstance(members_entries, Mapping):
             return len(members_entries)
@@ -271,20 +279,53 @@ class StructDefinitionSection(BaseManagementSection):
                     field_dict["lenth"] = entry.get("lenth")
                 initial_fields.append(field_dict)
         else:
-            members_value = data.get("members")
-            if isinstance(members_value, Mapping):
-                for key, type_name in members_value.items():
-                    if not isinstance(key, str):
+            fields_entries = data.get("fields")
+            if isinstance(fields_entries, Sequence):
+                for entry in fields_entries:
+                    if not isinstance(entry, Mapping):
                         continue
-                    canonical_type_name = str(type_name)
-                    initial_fields.append(
-                        {
-                            "name": key,
-                            "type_name": canonical_type_name,
-                            "raw_type_name": "",
-                            "value_node": None,
-                        }
+                    field_name_value = entry.get("field_name")
+                    type_value = entry.get("param_type")
+                    default_value_node = entry.get("default_value")
+                    field_name = (
+                        str(field_name_value).strip()
+                        if isinstance(field_name_value, str)
+                        else ""
                     )
+                    raw_type_name = (
+                        str(type_value).strip()
+                        if isinstance(type_value, str)
+                        else ""
+                    )
+                    canonical_type_name = (
+                        param_type_to_canonical(raw_type_name) if raw_type_name else ""
+                    )
+                    field_dict: Dict[str, object] = {
+                        "name": field_name,
+                        "type_name": canonical_type_name,
+                        "raw_type_name": raw_type_name,
+                        "value_node": default_value_node,
+                    }
+                    length_value = entry.get("length")
+                    if isinstance(length_value, int):
+                        # 兼容 StructDefinitionEditorWidget 对局内存档结构体的元数据字段命名
+                        field_dict["lenth"] = length_value
+                    initial_fields.append(field_dict)
+            else:
+                members_value = data.get("members")
+                if isinstance(members_value, Mapping):
+                    for key, type_name in members_value.items():
+                        if not isinstance(key, str):
+                            continue
+                        canonical_type_name = str(type_name)
+                        initial_fields.append(
+                            {
+                                "name": key,
+                                "type_name": canonical_type_name,
+                                "raw_type_name": "",
+                                "value_node": None,
+                            }
+                        )
 
         return initial_name, initial_fields
 
@@ -297,6 +338,9 @@ class StructDefinitionSection(BaseManagementSection):
         raw_value = payload.get("struct_ype")
         if isinstance(raw_value, str) and raw_value.strip():
             return raw_value.strip()
+        raw_struct_type = payload.get("struct_type")
+        if isinstance(raw_struct_type, str) and raw_struct_type.strip():
+            return raw_struct_type.strip()
         return STRUCT_TYPE_BASIC
 
     def _matches_struct_type(self, payload: Mapping[str, object]) -> bool:

@@ -39,6 +39,8 @@ class NodeGraphicsItem(QtWidgets.QGraphicsItem):
         # 输入端口所在的"标签行"索引映射（控件换行后，行索引不再等于端口序号）
         self._input_row_index_map: Dict[str, int] = {}
         self._add_port_button: Optional['AddPortButton'] = None  # 多分支节点的添加端口按钮
+        # 节点拖拽开始标记：用于避免在 ItemPositionChange 频繁触发时重复记录起点。
+        self._moving_started: bool = False
         # 给节点比连线更高的 z 值，让节点在连线上面
         self.setZValue(10)
         self.setFlags(
@@ -105,13 +107,17 @@ class NodeGraphicsItem(QtWidgets.QGraphicsItem):
           - on_node_item_position_change_started(node_item, old_pos)
           - on_node_item_position_changed(node_item, new_pos)
         """
+        from app.ui.scene.interaction_mixin import SceneInteractionMixin
         # 当节点位置即将改变时，通知场景记录旧位置（用于撤销命令）
         if change == QtWidgets.QGraphicsItem.GraphicsItemChange.ItemPositionChange:
             current_scene = self.scene()
-            if current_scene and not hasattr(self, "_moving_started"):
+            # Qt 可能在 QGraphicsItem 构造/挂载阶段提前触发 itemChange；
+            # 此时 Python 侧字段尚未初始化完成，因此这里必须允许缺省为 False。
+            moving_started = bool(getattr(self, "_moving_started", False))
+            if current_scene and not moving_started:
                 old_pos = self.pos()
-                if hasattr(current_scene, "on_node_item_position_change_started"):
-                    current_scene.on_node_item_position_change_started(  # type: ignore[attr-defined]
+                if isinstance(current_scene, SceneInteractionMixin):
+                    current_scene.on_node_item_position_change_started(
                         self,
                         (old_pos.x(), old_pos.y()),
                     )
@@ -120,9 +126,9 @@ class NodeGraphicsItem(QtWidgets.QGraphicsItem):
         # 当节点位置已经改变时，仅通知场景刷新与该节点相连的连线
         if change == QtWidgets.QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             current_scene = self.scene()
-            if current_scene and hasattr(current_scene, "on_node_item_position_changed"):
+            if isinstance(current_scene, SceneInteractionMixin):
                 new_pos = self.pos()
-                current_scene.on_node_item_position_changed(  # type: ignore[attr-defined]
+                current_scene.on_node_item_position_changed(
                     self,
                     (new_pos.x(), new_pos.y()),
                 )

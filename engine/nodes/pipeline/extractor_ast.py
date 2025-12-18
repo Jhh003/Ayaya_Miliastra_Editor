@@ -40,20 +40,24 @@ def extract_specs(file_paths: List[Path]) -> List[ExtractedSpec]:
         tree = ast.parse(source, filename=str(file_path))
 
         for fn in [n for n in tree.body if isinstance(n, ast.FunctionDef)]:
+            has_node_spec = False
             spec_kwargs: Dict[str, Any] = {}
             for dec in fn.decorator_list:
                 # 仅提取 @node_spec(...) 装饰的函数参数
                 if isinstance(dec, ast.Call):
                     callee = dec.func
                     if isinstance(callee, ast.Name) and callee.id == "node_spec":
+                        has_node_spec = True
                         for kw in dec.keywords:
                             spec_kwargs[kw.arg] = _to_literal(kw.value)
                         break
-            if not spec_kwargs:
+            # 没有 @node_spec(...) 则跳过；有装饰器但缺字段由后续 normalizer/validator 阻断式报错
+            if not has_node_spec:
                 continue
 
             spec = ExtractedSpec(
                 file_path=file_path,
+                function_name=str(fn.name or ""),
                 name=spec_kwargs.get("name"),
                 category=spec_kwargs.get("category"),
                 inputs=spec_kwargs.get("inputs") or [],

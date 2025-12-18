@@ -8,7 +8,7 @@
 3. 依赖executor的模块是否使用协议类型注解
 
 使用方式：
-    python core/automation/_static_checks/check_executor_protocol.py
+    python app/automation/_static_checks/check_executor_protocol.py
 """
 
 import inspect
@@ -159,7 +159,7 @@ def check_protocol_usage_in_modules():
     
     # 需要检查的关键模块（按功能分层，而非物理目录名命名）。
     # 说明：
-    # - 早期实现位于 `core/automation/*`，现已迁移至应用层 `app/automation/*`；
+    # - 自动化实现位于应用层 `app/automation/*`；
     # - 这里列出的路径全部相对于仓库根目录。
     modules_to_check = [
         "app/automation/ports/port_type_steps.py",

@@ -41,14 +41,12 @@ class RetryHandler:
         self.last_success_anchor_title = title
         self.last_success_anchor_prog_pos = prog_pos
 
-    def try_retry_with_anchor_fallback(self, step_info: dict, step_todo_id: str,
-                                       step_completed_signal) -> RetryResult:
+    def try_retry_with_anchor_fallback(self, step_info: dict, step_todo_id: str) -> RetryResult:
         """以最近锚点为基准回退并重试
 
         Args:
             step_info: 步骤详情
             step_todo_id: 步骤ID
-            step_completed_signal: 步骤完成信号
 
         Returns:
             RetryResult: 重试结果
@@ -82,8 +80,6 @@ class RetryHandler:
             allow_continue=self.monitor.is_execution_allowed,
             visual_callback=self.monitor.update_visual,
         )
-
-        step_completed_signal.emit(step_todo_id, success)
 
         if success:
             self.monitor.log("✓ 回退后重试成功")

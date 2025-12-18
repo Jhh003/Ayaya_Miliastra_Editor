@@ -33,6 +33,7 @@ from app.ui.dialogs.table_edit_helpers import (
 )
 from app.ui.foundation.context_menu_builder import ContextMenuBuilder
 from app.ui.foundation.theme_manager import Colors, Sizes, ThemeManager
+from app.ui.widgets.two_row_field_value_cell_factory import TwoRowFieldValueCellFactory
 
 
 class FieldTypeComboBox(ScrollSafeComboBox):
@@ -103,6 +104,16 @@ class TwoRowFieldTableWidget(QtWidgets.QWidget):
 
         self.table: QtWidgets.QTableWidget = QtWidgets.QTableWidget(self)
         self._setup_table()
+        self._value_cell_factory = TwoRowFieldValueCellFactory(
+            table=self.table,
+            get_supported_types=lambda: self._supported_types,
+            get_struct_id_options=lambda: self._struct_id_options,
+            get_dict_type_resolver=lambda: self._dict_type_resolver,
+            get_value_mode=lambda: self._value_mode,
+            on_content_changed=self._on_content_changed,
+            on_struct_view_requested=self.struct_view_requested.emit,
+            attach_context_menu_forwarding=self._attach_context_menu_forwarding,
+        )
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -354,7 +365,10 @@ class TwoRowFieldTableWidget(QtWidgets.QWidget):
             value_widget = self.table.cellWidget(value_row_index, 3)
             if value_widget is None:
                 value_widget = self.table.cellWidget(value_row_index, 1)
-            value = self._extract_value_from_widget(canonical_type_name, value_widget)
+            value = self._value_cell_factory.extract_value_from_widget(
+                canonical_type_name,
+                value_widget,
+            )
 
             fields.append(
                 {
@@ -584,7 +598,11 @@ class TwoRowFieldTableWidget(QtWidgets.QWidget):
         if alt_detail_widget is not None and alt_detail_widget is not old_detail_widget:
             self.table.removeCellWidget(detail_row_index, 1)
 
-        value_widget = self._create_value_cell_widget(type_name, value, readonly)
+        value_widget = self._value_cell_factory.create_value_cell_widget(
+            type_name,
+            value,
+            readonly=readonly,
+        )
 
         if isinstance(value_widget, (ListValueEditor, DictValueEditor)):
             # 集合型字段：
@@ -606,374 +624,6 @@ class TwoRowFieldTableWidget(QtWidgets.QWidget):
             self._attach_context_menu_forwarding(value_widget)
             self.table.setRowHidden(detail_row_index, True)
             self._adjust_row_height_for_value_widget(main_row_index, value_widget)
-
-    def _create_value_cell_widget(
-        self,
-        type_name: str,
-        value: Any,
-        readonly: bool = False,
-    ) -> QtWidgets.QWidget:
-        """创建值编辑控件（基础/列表/字典/结构体）。"""
-        canonical_type_name = normalize_canonical_type_name(type_name or "")
-        # 元数据模式：仅将传入的 value 以只读文本形式展示（例如列表长度），不做类型特化。
-        if self._value_mode == "metadata":
-            # 支持两种传入形式：
-            # - 纯值：value 既作为展示内容，也作为业务读写用的原始值；
-            # - {"raw": Any, "display": Any}：raw 作为真实值，display 作为展示文本。
-            raw_value: Any = value
-            display_value: Any = value
-            from collections.abc import Mapping as _MappingABC  # 避免与 typing.Mapping 混淆
-
-            if isinstance(value, _MappingABC):
-                if "raw" in value:
-                    raw_value = value.get("raw")
-                if "display" in value:
-                    display_value = value.get("display")
-
-            text = ""
-            if isinstance(display_value, (int, float)):
-                int_value = int(display_value)
-                text = (
-                    str(int_value)
-                    if float(display_value) == float(int_value)
-                    else str(display_value)
-                )
-            elif isinstance(display_value, str):
-                text = display_value
-
-            line_edit = ClickToEditLineEdit(text, self.table)
-            line_edit.setPlaceholderText("")
-            line_edit.setClearButtonEnabled(False)
-            line_edit.setMinimumHeight(Sizes.INPUT_HEIGHT)
-            line_edit.setReadOnly(True or readonly)
-            line_edit.setStyleSheet(ThemeManager.readonly_input_style())
-            # 在元数据模式下，通过动态属性记录真实值，便于后续从表格中读取。
-            line_edit.setProperty("two_row_raw_value", raw_value)
-            return self._wrap_line_edit_in_value_cell(line_edit)
-
-        if not canonical_type_name:
-            line_edit = ClickToEditLineEdit("", self.table)
-            line_edit.setPlaceholderText("无初始值")
-            line_edit.setClearButtonEnabled(True)
-            line_edit.setMinimumHeight(Sizes.INPUT_HEIGHT)
-            line_edit.setReadOnly(readonly)
-            if readonly:
-                line_edit.setStyleSheet(ThemeManager.readonly_input_style())
-            line_edit.editingFinished.connect(self._on_content_changed)
-            return self._wrap_line_edit_in_value_cell(line_edit)
-
-        # 列表类型
-        if is_list_type(canonical_type_name):
-            list_values: List[str] = []
-            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                for element in value:
-                    list_values.append(str(element))
-            editor = ListValueEditor(
-                canonical_type_name,
-                list_values,
-                parent=self.table,
-            )
-            editor.value_changed.connect(self._on_content_changed)
-            if readonly:
-                # 只读模式下移除子表格末尾的“新增占位行”，避免出现伪“新建”入口。
-                editor.set_read_only(True)
-            return editor
-
-        # 字典类型
-        if is_dict_type(canonical_type_name):
-            key_type_name = "字符串"
-            value_type_name = "字符串"
-            entries: List[Tuple[str, str]] = []
-            if isinstance(value, Mapping):
-                # 若上层提供了键/值类型解析回调，则优先使用回调结果
-                if self._dict_type_resolver is not None:
-                    resolved = self._dict_type_resolver(
-                        type_name,
-                        value,
-                    )
-                    if (
-                        isinstance(resolved, tuple)
-                        and len(resolved) == 2
-                        and isinstance(resolved[0], str)
-                        and isinstance(resolved[1], str)
-                    ):
-                        resolved_key_type = resolved[0].strip()
-                        resolved_value_type = resolved[1].strip()
-                        if resolved_key_type:
-                            key_type_name = resolved_key_type
-                        if resolved_value_type:
-                            value_type_name = resolved_value_type
-
-                for key, val in value.items():
-                    entries.append((str(key), str(val)))
-            base_type_options = self._get_base_types()
-            # 确保当前字段的键/值类型出现在下拉选项中，即便它们本身是列表类型等派生类型，
-            # 以便在节点图变量等场景下正确展示如“GUID列表”之类的值类型。
-            normalized_options: List[str] = list(base_type_options)
-            if key_type_name not in normalized_options:
-                normalized_options.insert(0, key_type_name)
-            if value_type_name not in normalized_options:
-                normalized_options.append(value_type_name)
-            editor = DictValueEditor(
-                key_type_name,
-                value_type_name,
-                entries,
-                base_type_options=normalized_options,
-                parent=self.table,
-            )
-            editor.value_changed.connect(self._on_content_changed)
-            if readonly:
-                # 只读模式下移除子表格末尾的“新增占位行”，避免出现伪“新建”入口。
-                editor.set_read_only(True)
-            return editor
-
-        # 结构体 / 结构体列表
-        if is_struct_type(canonical_type_name):
-            struct_id_text = ""
-            if isinstance(value, str):
-                struct_id_text = value.strip()
-
-            # 若未配置结构体列表，则退化为手动输入模式
-            if not self._struct_id_options:
-                editor = ClickToEditLineEdit(struct_id_text, self.table)
-                editor.setPlaceholderText("结构体ID（可选）")
-                editor.setMinimumHeight(Sizes.INPUT_HEIGHT)
-                editor.setReadOnly(readonly)
-                if readonly:
-                    editor.setStyleSheet(ThemeManager.readonly_input_style())
-                editor.editingFinished.connect(self._on_content_changed)
-                # 只读模式下为结构体字段添加"查看"按钮
-                if readonly and struct_id_text:
-                    return self._create_readonly_struct_cell_with_view_button(
-                        editor, struct_id_text
-                    )
-                return self._wrap_line_edit_in_value_cell(editor)
-
-            # 使用下拉框选择结构体 ID（首项为空表示"未选择"）
-            combo = ScrollSafeComboBox(self.table)
-            combo.setMinimumHeight(Sizes.INPUT_HEIGHT)
-            combo.setEditable(False)
-            combo.addItem("（未选择）", "")
-
-            # 保持传入顺序并去重
-            seen_ids: set[str] = set()
-            for struct_id in self._struct_id_options:
-                text = str(struct_id).strip()
-                if not text or text in seen_ids:
-                    continue
-                seen_ids.add(text)
-                combo.addItem(text, text)
-
-            if struct_id_text:
-                index = combo.findData(struct_id_text)
-                if index < 0:
-                    combo.addItem(struct_id_text, struct_id_text)
-                    index = combo.findData(struct_id_text)
-                if index >= 0:
-                    combo.setCurrentIndex(index)
-            else:
-                combo.setCurrentIndex(0)
-
-            combo.setEnabled(not readonly)
-            if readonly:
-                combo.setStyleSheet(ThemeManager.readonly_input_style())
-            combo.currentIndexChanged.connect(lambda _index: self._on_content_changed())
-
-            container = QtWidgets.QWidget(self.table)
-            layout = QtWidgets.QHBoxLayout(container)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(Sizes.SPACING_SMALL)
-            layout.addWidget(combo, 1)
-
-            # 只读模式下为结构体字段添加"查看"按钮
-            if readonly and struct_id_text:
-                view_button = QtWidgets.QPushButton("查看", self.table)
-                view_button.setFixedHeight(Sizes.INPUT_HEIGHT)
-                view_button.setFixedWidth(50)
-                view_button.setToolTip(f"查看结构体 {struct_id_text} 的定义")
-                view_button.clicked.connect(
-                    lambda _checked, sid=struct_id_text: self._on_view_struct_clicked(sid)
-                )
-                layout.addWidget(view_button)
-                self._attach_context_menu_forwarding(view_button)
-
-            self._attach_context_menu_forwarding(combo)
-            self._attach_context_menu_forwarding(container)
-            return container
-
-        # 其余基础类型
-        value_text = str(value) if value is not None else ""
-        line_edit = ClickToEditLineEdit(value_text, self.table)
-        line_edit.setPlaceholderText("无初始值")
-        line_edit.setClearButtonEnabled(True)
-        line_edit.setMinimumHeight(Sizes.INPUT_HEIGHT)
-        line_edit.setReadOnly(readonly)
-        if readonly:
-            line_edit.setStyleSheet(ThemeManager.readonly_input_style())
-        line_edit.editingFinished.connect(self._on_content_changed)
-        return self._wrap_line_edit_in_value_cell(line_edit)
-
-    def _extract_value_from_widget(
-        self,
-        type_name: str,
-        value_widget: Optional[QtWidgets.QWidget],
-    ) -> Any:
-        """从值编辑控件中提取数据。"""
-        normalized_type_name = normalize_canonical_type_name(type_name)
-
-        # 元数据模式：优先从动态属性中读取真实值，其次回退到文本内容。
-        if self._value_mode == "metadata":
-            if value_widget is None:
-                return ""
-
-            # 可能直接是行编辑框，也可能是外层容器，优先尝试属性读取。
-            raw_value = value_widget.property("two_row_raw_value")
-            if raw_value is not None:
-                return raw_value
-
-            line_edit: Optional[QtWidgets.QLineEdit]
-            if isinstance(value_widget, QtWidgets.QLineEdit):
-                line_edit = value_widget
-            else:
-                line_edit = value_widget.findChild(QtWidgets.QLineEdit)
-
-            if line_edit is not None:
-                raw_value_from_editor = line_edit.property("two_row_raw_value")
-                if raw_value_from_editor is not None:
-                    return raw_value_from_editor
-                return line_edit.text()
-
-            return ""
-
-        # 列表类型
-        if is_list_type(normalized_type_name):
-            if isinstance(value_widget, ListValueEditor):
-                return value_widget.get_values()
-            return []
-
-        # 字典类型
-        if is_dict_type(normalized_type_name):
-            if isinstance(value_widget, DictValueEditor):
-                state = value_widget.get_dict_state()
-                raw_entries: List[Tuple[str, str]] = state.get("entries", [])
-                mapping: Dict[str, str] = {}
-                for key_text, value_text in raw_entries:
-                    key_normalized = key_text.strip()
-                    if not key_normalized and not value_text:
-                        continue
-                    mapping[key_normalized] = value_text
-                return mapping
-            return {}
-
-        # 结构体 / 结构体列表
-        if is_struct_type(normalized_type_name):
-            if isinstance(value_widget, QtWidgets.QComboBox):
-                current_data = value_widget.currentData()
-                if isinstance(current_data, str):
-                    return current_data
-                return value_widget.currentText()
-            if isinstance(value_widget, QtWidgets.QWidget):
-                combo = value_widget.findChild(QtWidgets.QComboBox)
-                if isinstance(combo, QtWidgets.QComboBox):
-                    current_data = combo.currentData()
-                    if isinstance(current_data, str):
-                        return current_data
-                    return combo.currentText()
-
-            # 退化为从文本编辑框读取
-            value_text = ""
-            if isinstance(value_widget, QtWidgets.QLineEdit):
-                value_text = value_widget.text()
-            elif isinstance(value_widget, QtWidgets.QWidget):
-                inner_editor = value_widget.findChild(QtWidgets.QLineEdit)
-                if isinstance(inner_editor, QtWidgets.QLineEdit):
-                    value_text = inner_editor.text()
-            return value_text
-
-        # 其余基础类型
-        value_text = ""
-        if isinstance(value_widget, QtWidgets.QLineEdit):
-            value_text = value_widget.text()
-        elif isinstance(value_widget, QtWidgets.QWidget):
-            inner_editor = value_widget.findChild(QtWidgets.QLineEdit)
-            if isinstance(inner_editor, QtWidgets.QLineEdit):
-                value_text = inner_editor.text()
-        return value_text
-
-    def _wrap_line_edit_in_value_cell(
-        self,
-        line_edit: QtWidgets.QLineEdit,
-    ) -> QtWidgets.QWidget:
-        """为"数据值"列的单行编辑框提供容器包装。"""
-        container = wrap_click_to_edit_line_edit_for_table_cell(
-            self.table,
-            line_edit,
-        )
-        self._attach_context_menu_forwarding(line_edit)
-        self._attach_context_menu_forwarding(container)
-        return container
-
-    def _create_readonly_struct_cell_with_view_button(
-        self,
-        line_edit: QtWidgets.QLineEdit,
-        struct_id: str,
-    ) -> QtWidgets.QWidget:
-        """为只读结构体字段创建带"查看"按钮的单元格容器。"""
-        container = QtWidgets.QWidget(self.table)
-        layout = QtWidgets.QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Sizes.SPACING_SMALL)
-
-        # 文本框部分
-        text_container = wrap_click_to_edit_line_edit_for_table_cell(
-            self.table,
-            line_edit,
-        )
-        layout.addWidget(text_container, 1)
-
-        # 查看按钮
-        view_button = QtWidgets.QPushButton("查看", self.table)
-        view_button.setFixedHeight(Sizes.INPUT_HEIGHT)
-        view_button.setFixedWidth(50)
-        view_button.setToolTip(f"查看结构体 {struct_id} 的定义")
-        view_button.clicked.connect(
-            lambda _checked, sid=struct_id: self._on_view_struct_clicked(sid)
-        )
-        layout.addWidget(view_button)
-
-        self._attach_context_menu_forwarding(line_edit)
-        self._attach_context_menu_forwarding(text_container)
-        self._attach_context_menu_forwarding(view_button)
-        self._attach_context_menu_forwarding(container)
-        return container
-
-    def _on_view_struct_clicked(self, struct_id: str) -> None:
-        """处理查看结构体按钮点击事件。"""
-        if struct_id:
-            self.struct_view_requested.emit(struct_id)
-
-    def _get_base_types(self) -> List[str]:
-        """供字典编辑对话框选择键/值类型使用的"基础类型"集合。"""
-        base_types: List[str] = []
-        for type_name in self._supported_types:
-            normalized = normalize_canonical_type_name(type_name)
-            if (
-                not is_list_type(normalized)
-                and not is_dict_type(normalized)
-                and not is_struct_type(normalized)
-            ):
-                base_types.append(normalized)
-        if not base_types:
-            base_types.append("字符串")
-        # 去重但保持顺序
-        seen: set[str] = set()
-        result: List[str] = []
-        for name in base_types:
-            if name in seen:
-                continue
-            seen.add(name)
-            result.append(name)
-        return result
 
     def _adjust_row_height_for_value_widget(
         self,

@@ -53,6 +53,10 @@ if not __package__:
 
 from engine.validate import EngineIssue, validate_files  # noqa: E402
 from engine.configs.settings import settings  # noqa: E402
+from engine.nodes.composite_file_policy import (  # noqa: E402
+    discover_composite_definition_files,
+    is_composite_definition_file,
+)
 
 # 为布局/注册表上下文等依赖 workspace_root 的模块提供入口信息
 settings.set_config_path(WORKSPACE)
@@ -94,16 +98,12 @@ def _collect_all_targets(workspace: Path) -> List[Path]:
                 path
                 for path in graphs_dir.rglob("*.py")
                 if not path.name.startswith("_")
+                # 跳过校验脚本（如 校验节点图.py），这些不是真正的节点图文件
+                and ("校验" not in path.stem)
             )
         )
     if composites_dir.exists():
-        files.extend(
-            sorted(
-                path
-                for path in composites_dir.rglob("*.py")
-                if path.name.startswith("composite_")
-            )
-        )
+        files.extend(discover_composite_definition_files(workspace))
     return files
 
 
@@ -139,6 +139,8 @@ def _expand_target_to_files(target_text: str, workspace: Path) -> List[Path]:
         else:
             if path.name.startswith("_"):
                 continue
+            if "校验" in path.stem:
+                continue
             filtered.append(path)
             continue
 
@@ -147,7 +149,7 @@ def _expand_target_to_files(target_text: str, workspace: Path) -> List[Path]:
         except ValueError:
             filtered.append(path)
             continue
-        if not path.name.startswith("composite_"):
+        if not is_composite_definition_file(path):
             continue
         filtered.append(path)
     return filtered
@@ -339,7 +341,29 @@ def parse_cli(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="禁用校验缓存（默认启用）",
     )
+    parser.add_argument(
+        "--no-composite-struct-check",
+        dest="disable_composite_struct_check",
+        action="store_true",
+        help="禁用复合节点结构校验（默认启用；用于对齐UI的“缺少数据来源/未连接”等检查）",
+    )
     return parser.parse_args(argv)
+
+
+def _is_composite_target(path: Path) -> bool:
+    """判断目标是否为复合节点定义文件。"""
+    return is_composite_definition_file(path)
+
+
+def _collect_composite_structural_issues(
+    targets: List[Path],
+    workspace: Path,
+) -> List[EngineIssue]:
+    """对复合节点补齐“图结构校验”，覆盖 UI 报的“缺少数据来源/未连接”等问题。"""
+    from engine.validate import collect_composite_structural_issues
+
+    # 统一复用引擎侧实现，避免工具与 UI 入口漂移
+    return list(collect_composite_structural_issues(targets, workspace))
 
 
 def main() -> None:
@@ -359,10 +383,14 @@ def main() -> None:
         use_cache=not parsed_args.disable_cache,
     )
 
-    issues_by_file = _group_issues_by_file(report.issues, WORKSPACE)
+    all_issues: List[EngineIssue] = list(report.issues)
+    if not parsed_args.disable_composite_struct_check:
+        all_issues.extend(_collect_composite_structural_issues(targets, WORKSPACE))
+
+    issues_by_file = _group_issues_by_file(all_issues, WORKSPACE)
     failed_files = _print_file_details(targets, issues_by_file, WORKSPACE)
     folder_stats = _build_folder_stats(targets, issues_by_file, WORKSPACE)
-    level_counts, category_counts, code_counts = _build_issue_summary(report.issues)
+    level_counts, category_counts, code_counts = _build_issue_summary(all_issues)
 
     _print_summary(len(targets), failed_files, folder_stats, level_counts, category_counts, code_counts)
 

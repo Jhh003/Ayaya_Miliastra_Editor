@@ -97,6 +97,13 @@ class RightPanelRegistry:
 
         self.update_visibility()
 
+    def get_widget(self, tab_id: str) -> QtWidgets.QWidget:
+        """获取已注册 tab_id 对应的面板 widget（不隐式改变可见性）。"""
+        spec = self._specs.get(tab_id)
+        if spec is None:
+            raise KeyError(f"未注册的右侧标签: {tab_id!r}")
+        return spec.widget
+
     def switch_to(self, tab_id: str) -> None:
         spec = self._specs.get(tab_id)
         if spec is None:

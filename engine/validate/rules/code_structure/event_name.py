@@ -9,7 +9,13 @@ from engine.signal import get_default_signal_repository
 from ...context import ValidationContext
 from ...issue import EngineIssue
 from ...pipeline import ValidationRule
-from ..ast_utils import create_rule_issue, get_cached_module, iter_class_methods, line_span_text
+from ..ast_utils import (
+    create_rule_issue,
+    get_cached_module,
+    infer_graph_scope,
+    iter_class_methods,
+    line_span_text,
+)
 from ..node_index import event_node_names
 
 
@@ -26,7 +32,8 @@ class EventNameRule(ValidationRule):
 
         file_path: Path = ctx.file_path
         tree = get_cached_module(ctx)
-        valid_event_names = event_node_names(ctx.workspace_path)
+        scope = infer_graph_scope(ctx)
+        valid_event_names = event_node_names(ctx.workspace_path, scope)
         signal_repo = get_default_signal_repository()
         issues: List[EngineIssue] = []
 

@@ -100,6 +100,15 @@ class ValidationDetailPanel(PanelScaffold):
 
         lines.append(f"级别：{level_display}")
         lines.append(f"分类：{issue.category}")
+        code_text = getattr(issue, "code", "") or ""
+        lines.append(f"错误码：{code_text or '（无）'}")
+
+        file_text = getattr(issue, "file", None)
+        if isinstance(file_text, str) and file_text:
+            lines.append(f"文件：{file_text}")
+        line_span_text = getattr(issue, "line_span", None)
+        if isinstance(line_span_text, str) and line_span_text:
+            lines.append(f"行范围：{line_span_text}")
         location_text = issue.location or ""
         lines.append(f"位置：{location_text or '（无具体位置）'}")
 

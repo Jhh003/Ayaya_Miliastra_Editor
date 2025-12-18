@@ -252,36 +252,20 @@ def build_context_from_host(host) -> CurrentTodoContext:
     返回:
         构造好的 CurrentTodoContext
     """
-    tree = getattr(host, "tree", None)
-    selected_todo_id = get_selected_todo_id_from_tree(tree) if tree else ""
+    tree = host.tree
+    selected_todo_id = get_selected_todo_id_from_tree(tree)
 
-    # 获取 find_first_todo_for_graph 回调
-    find_first_todo_for_graph = None
-    if hasattr(host, "find_first_todo_for_graph"):
-        find_first_todo_for_graph = host.find_first_todo_for_graph
-
-    # 获取 get_item_by_id 回调
-    get_item_by_id = None
-    tree_manager = getattr(host, "tree_manager", None)
-    if tree_manager and hasattr(tree_manager, "get_item_by_id"):
-        get_item_by_id = tree_manager.get_item_by_id
-
-    # Todo 数据统一以 TreeManager 作为集中权威来源，其次才回退到宿主自身字段
-    tree_manager = getattr(host, "tree_manager", None)
-    if tree_manager is not None:
-        todo_map = getattr(tree_manager, "todo_map", {}) or {}
-        todos = getattr(tree_manager, "todos", []) or []
-    else:
-        todo_map = getattr(host, "todo_map", {}) or {}
-        todos = getattr(host, "todos", []) or []
+    tree_manager = host.tree_manager
+    todo_map = tree_manager.todo_map
+    todos = tree_manager.todos
 
     return CurrentTodoContext(
         selected_todo_id=selected_todo_id,
-        current_todo_id=getattr(host, "current_todo_id", "") or "",
-        current_detail_info=getattr(host, "current_detail_info", None),
+        current_todo_id=host.current_todo_id or "",
+        current_detail_info=host.current_detail_info,
         todo_map=todo_map,
         todos=todos,
-        find_first_todo_for_graph=find_first_todo_for_graph,
-        get_item_by_id=get_item_by_id,
+        find_first_todo_for_graph=host.find_first_todo_for_graph,
+        get_item_by_id=tree_manager.get_item_by_id,
     )
 

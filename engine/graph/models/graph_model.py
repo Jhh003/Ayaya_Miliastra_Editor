@@ -283,15 +283,17 @@ class GraphModel:
         metadata["signal_bindings"] = {node_id: {"signal_id": "<signal_xxx>"}, ...}
         """
         bindings = self.metadata.get("signal_bindings")
-        if not isinstance(bindings, dict):
-            bindings = {}
-            self.metadata["signal_bindings"] = bindings
-        return bindings
+        return bindings if isinstance(bindings, dict) else {}
     
     def set_node_signal_binding(self, node_id: str, signal_id: str) -> None:
-        """为指定节点绑定信号ID（覆盖同一节点的旧绑定）。"""
-        bindings = self.get_signal_bindings()
-        bindings[str(node_id)] = {"signal_id": str(signal_id)}
+        """已弃用：不要在 GraphModel 上直接写入 signal_bindings。
+
+        signal_bindings 必须由 `engine.graph.semantic.GraphSemanticPass` 在明确阶段覆盖式生成。
+        请改为写入节点常量（`node.input_constants["信号名"]` 与隐藏键 `__signal_id`），
+        并触发一次 GraphSemanticPass。
+        """
+        _ = (node_id, signal_id)
+        raise ValueError("禁止直接写入 metadata['signal_bindings']，请使用 GraphSemanticPass")
     
     def get_node_signal_id(self, node_id: str) -> Optional[str]:
         """获取指定节点当前绑定的信号ID（若未绑定则返回None）。"""
@@ -319,15 +321,17 @@ class GraphModel:
         }
         """
         bindings = self.metadata.get("struct_bindings")
-        if not isinstance(bindings, dict):
-            bindings = {}
-            self.metadata["struct_bindings"] = bindings
-        return bindings
+        return bindings if isinstance(bindings, dict) else {}
     
     def set_node_struct_binding(self, node_id: str, binding: Dict[str, Any]) -> None:
-        """为指定节点写入结构体绑定信息（覆盖同一节点的旧绑定）。"""
-        bindings = self.get_struct_bindings()
-        bindings[str(node_id)] = dict(binding)
+        """已弃用：不要在 GraphModel 上直接写入 struct_bindings。
+
+        struct_bindings 必须由 `engine.graph.semantic.GraphSemanticPass` 在明确阶段覆盖式生成。
+        请改为写入节点常量（`node.input_constants["结构体名"]` 与隐藏键 `__struct_id`）
+        与端口字段集合（动态字段端口），并触发一次 GraphSemanticPass。
+        """
+        _ = (node_id, binding)
+        raise ValueError("禁止直接写入 metadata['struct_bindings']，请使用 GraphSemanticPass")
     
     def get_node_struct_binding(self, node_id: str) -> Optional[Dict[str, Any]]:
         """获取指定节点当前绑定的结构体信息（若未绑定则返回None）。"""

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, TYPE_CHECKING, Any
 
 from engine.configs.settings import Settings
-from engine.nodes.node_registry import NodeRegistry, get_node_registry
+
+if TYPE_CHECKING:
+    from engine.nodes.node_registry import NodeRegistry
 
 
 @dataclass(frozen=True)
@@ -21,7 +23,7 @@ class LayoutRegistryContext:
     """
 
     workspace_path: Path
-    node_registry: NodeRegistry
+    node_registry: Optional["NodeRegistry"]
     entity_inputs_by_name: Dict[str, Set[str]]
     variadic_min_args: Dict[str, int]
 
@@ -30,6 +32,8 @@ class LayoutRegistryContext:
         if not isinstance(workspace_path, Path):
             raise TypeError("workspace_path 必须是 pathlib.Path 实例")
         resolved_workspace = workspace_path.resolve()
+        from engine.nodes.node_registry import get_node_registry
+
         registry = get_node_registry(resolved_workspace, include_composite=include_composite)
         entity_inputs_by_name = registry.get_entity_input_params_by_func()
         variadic_min_args = registry.get_variadic_min_args()
@@ -38,6 +42,52 @@ class LayoutRegistryContext:
             node_registry=registry,
             entity_inputs_by_name=entity_inputs_by_name,
             variadic_min_args=variadic_min_args,
+        )
+
+    @classmethod
+    def build_from_node_library(
+        cls,
+        workspace_path: Path,
+        *,
+        node_library: Dict[str, Any],
+    ) -> "LayoutRegistryContext":
+        """
+        基于调用方提供的节点库派生布局所需的最小索引，避免在“节点库构建中”反向触发 NodeRegistry。
+
+        说明：
+        - 该构造器不会调用 get_node_registry / NodeRegistry.get_library；
+        - node_library 采用 duck-typing：只要求每个 item 具备 name/input_types/inputs 等字段（与 NodeDef 对齐）。
+        """
+        if not isinstance(workspace_path, Path):
+            raise TypeError("workspace_path 必须是 pathlib.Path 实例")
+        resolved_workspace = workspace_path.resolve()
+
+        derived_entity_inputs: Dict[str, Set[str]] = {}
+        derived_variadic_min_args: Dict[str, int] = {}
+
+        for _, node_def in dict(node_library or {}).items():
+            node_name = str(getattr(node_def, "name", "") or "")
+            if node_name == "":
+                continue
+
+            input_types = getattr(node_def, "input_types", None) or {}
+            if isinstance(input_types, dict):
+                for port_name, port_type in input_types.items():
+                    port_type_text = str(port_type or "")
+                    if "实体" in port_type_text:
+                        derived_entity_inputs.setdefault(node_name, set()).add(str(port_name))
+
+            inputs = getattr(node_def, "inputs", None) or []
+            if isinstance(inputs, list) and inputs:
+                variadic_inputs = [str(input_name) for input_name in inputs if "~" in str(input_name)]
+                if variadic_inputs:
+                    derived_variadic_min_args[node_name] = 1 if len(variadic_inputs) == 1 else 2
+
+        return cls(
+            workspace_path=resolved_workspace,
+            node_registry=None,
+            entity_inputs_by_name=derived_entity_inputs,
+            variadic_min_args=derived_variadic_min_args,
         )
 
     @classmethod

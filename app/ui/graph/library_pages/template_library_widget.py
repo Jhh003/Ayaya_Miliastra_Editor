@@ -34,7 +34,9 @@ from app.ui.graph.library_pages.library_scaffold import (
     LibraryPageMixin,
     LibrarySelection,
 )
+from app.ui.graph.library_pages.library_view_scope import describe_resource_view_scope
 from app.ui.graph.library_pages.category_tree_mixin import EntityCategoryTreeMixin
+from app.ui.graph.library_pages.standard_dual_pane_list_page import StandardDualPaneListPage
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,7 @@ class TemplateDialogConfig:
 
 
 class TemplateLibraryWidget(
-    DualPaneLibraryScaffold,
+    StandardDualPaneListPage,
     LibraryPageMixin,
     SearchFilterMixin,
     ToolbarMixin,
@@ -58,7 +60,8 @@ class TemplateLibraryWidget(
 ):
     """元件库界面"""
 
-    template_selected = QtCore.pyqtSignal(str)  # template_id
+    # 统一库页选中事件：发射 LibrarySelection（或 None 表示无有效选中）。
+    selection_changed = QtCore.pyqtSignal(object)
     # 当模板被新增/删除等造成持久化状态改变时发射，用于通知上层立即保存存档索引
     data_changed = QtCore.pyqtSignal(LibraryChangeEvent)
     
@@ -79,42 +82,22 @@ class TemplateLibraryWidget(
     
     def _setup_ui(self) -> None:
         """设置UI"""
-        # 顶部：标题右侧放搜索框，作为全局过滤入口
-        self.search_edit = QtWidgets.QLineEdit(self)
-        self.search_edit.setPlaceholderText("搜索元件...")
-        self.search_edit.setMinimumHeight(Sizes.INPUT_HEIGHT)
-        self.add_action_widget(self.search_edit)
-
-        # 标题下方：仅保留“新建/删除”等主操作按钮
-        toolbar_widget = QtWidgets.QWidget()
-        toolbar_layout = QtWidgets.QHBoxLayout(toolbar_widget)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        self.init_toolbar(toolbar_layout)
         self.add_template_btn = QtWidgets.QPushButton("+ 新建元件", self)
-        self.add_template_btn.setMinimumHeight(Sizes.BUTTON_HEIGHT)
         self.delete_template_btn = QtWidgets.QPushButton("删除", self)
-        self.delete_template_btn.setMinimumHeight(Sizes.BUTTON_HEIGHT)
-        toolbar_buttons = [self.add_template_btn, self.delete_template_btn]
-        # 工具栏行只放操作按钮，搜索栏统一放在标题行右侧
-        self.setup_toolbar_with_search(toolbar_layout, toolbar_buttons, None)
-        self.set_status_widget(toolbar_widget)
-        
-        self.category_tree = QtWidgets.QTreeWidget()
-        self.category_tree.setHeaderLabel("元件分类")
-        self.category_tree.setObjectName("leftPanel")
-        self.category_tree.setFixedWidth(Sizes.LEFT_PANEL_WIDTH)
-        self.category_tree.setIndentation(Sizes.SPACING_MEDIUM)
-
-        self.template_list = QtWidgets.QListWidget()
-
-        self.build_dual_pane(
-            self.category_tree,
-            self.template_list,
+        widgets = self.build_standard_dual_pane_list_ui(
+            search_placeholder="搜索元件...",
+            toolbar_buttons=[self.add_template_btn, self.delete_template_btn],
+            left_header_label="元件分类",
             left_title="元件分类",
             left_description="按实体类型过滤元件",
             right_title="元件列表",
             right_description="双击可查看详情，支持按类型筛选",
+            tree_indentation=Sizes.SPACING_MEDIUM,
+            wrap_right_list=False,
         )
+        self.search_edit = widgets.search_edit
+        self.category_tree = widgets.category_tree
+        self.template_list = widgets.list_widget
         
         # 连接信号
         self.add_template_btn.clicked.connect(self._add_template)
@@ -149,13 +132,6 @@ class TemplateLibraryWidget(
         self.current_package = package
         self.refresh_templates()
 
-    def set_package(
-        self,
-        package: Union[PackageView, GlobalResourceView, UnclassifiedResourceView],
-    ) -> None:
-        """兼容旧接口，内部委托给 set_context。"""
-        self.set_context(package)
-
     def reload(self) -> None:
         """在当前上下文下全量刷新列表并负责选中恢复。"""
         self.refresh_templates()
@@ -171,7 +147,7 @@ class TemplateLibraryWidget(
         return LibrarySelection(
             kind="template",
             id=value,
-            context={"scope": self._describe_current_scope()},
+            context={"scope": describe_resource_view_scope(self.current_package)},
         )
 
     def set_selection(self, selection: Optional[LibrarySelection]) -> None:
@@ -264,14 +240,19 @@ class TemplateLibraryWidget(
             return None
 
         def emit_selection_for_template(template_id: Any) -> None:
-            if isinstance(template_id, str) and template_id:
-                self.template_selected.emit(template_id)
+            if not isinstance(template_id, str) or not template_id:
+                return
+            selection = LibrarySelection(
+                kind="template",
+                id=template_id,
+                context={"scope": describe_resource_view_scope(self.current_package)},
+            )
+            self.notify_selection_state(True, context={"source": "template"})
+            self.selection_changed.emit(selection)
 
         def emit_empty_selection() -> None:
-            if not self.current_package:
-                return
             self.notify_selection_state(False, context={"source": "template"})
-            self.template_selected.emit("")
+            self.selection_changed.emit(None)
 
         rebuild_list_with_preserved_selection(
             self.template_list,
@@ -286,16 +267,6 @@ class TemplateLibraryWidget(
 
     # === 内部辅助 ===
 
-    def _describe_current_scope(self) -> str:
-        """根据当前资源视图返回简单 scope 标识，用于变更事件上下文。"""
-        if isinstance(self.current_package, PackageView):
-            return "package"
-        if isinstance(self.current_package, GlobalResourceView):
-            return "global"
-        if isinstance(self.current_package, UnclassifiedResourceView):
-            return "unclassified"
-        return "unknown"
-    
     def _on_category_clicked(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
         """分类点击"""
         category = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
@@ -654,7 +625,13 @@ class TemplateLibraryWidget(
             item = self.template_list.item(i)
             if item.data(QtCore.Qt.ItemDataRole.UserRole) == template_id:
                 self.template_list.setCurrentItem(item)
-                self.template_selected.emit(template_id)
+                selection = LibrarySelection(
+                    kind="template",
+                    id=template_id,
+                    context={"scope": describe_resource_view_scope(self.current_package)},
+                )
+                self.notify_selection_state(True, context={"source": "template"})
+                self.selection_changed.emit(selection)
                 break
 
         # 通知上层：模板库发生了持久化相关变更（需立即保存包索引）
@@ -662,7 +639,7 @@ class TemplateLibraryWidget(
             kind="template",
             id=template_id,
             operation="create",
-            context={"scope": self._describe_current_scope()},
+            context={"scope": describe_resource_view_scope(self.current_package)},
         )
         self.data_changed.emit(event)
     
@@ -715,7 +692,7 @@ class TemplateLibraryWidget(
                 id=template_id,
                 operation="update",
                 context={
-                    "scope": self._describe_current_scope(),
+                    "scope": describe_resource_view_scope(self.current_package),
                     "action": "detach_from_package",
                 },
             )
@@ -804,7 +781,7 @@ class TemplateLibraryWidget(
             id=template_id,
             operation="delete",
             context={
-                "scope": self._describe_current_scope(),
+                "scope": describe_resource_view_scope(self.current_package),
                 "referencing_packages": referencing_package_ids,
             },
         )
@@ -815,7 +792,17 @@ class TemplateLibraryWidget(
     def _on_template_clicked(self, item: QtWidgets.QListWidgetItem) -> None:
         """模板点击"""
         template_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
-        self.template_selected.emit(template_id)
+        if not isinstance(template_id, str) or not template_id:
+            self.notify_selection_state(False, context={"source": "template"})
+            self.selection_changed.emit(None)
+            return
+        selection = LibrarySelection(
+            kind="template",
+            id=template_id,
+            context={"scope": describe_resource_view_scope(self.current_package)},
+        )
+        self.notify_selection_state(True, context={"source": "template"})
+        self.selection_changed.emit(selection)
     
     def _filter_templates(self, text: str) -> None:
         """过滤模板"""
@@ -827,6 +814,12 @@ class TemplateLibraryWidget(
             item = self.template_list.item(i)
             if item.data(QtCore.Qt.ItemDataRole.UserRole) == template_id:
                 self.template_list.setCurrentItem(item)
-                self.template_selected.emit(template_id)
+                selection = LibrarySelection(
+                    kind="template",
+                    id=template_id,
+                    context={"scope": describe_resource_view_scope(self.current_package)},
+                )
+                self.notify_selection_state(True, context={"source": "template"})
+                self.selection_changed.emit(selection)
                 break
 

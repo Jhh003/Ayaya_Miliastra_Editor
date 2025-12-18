@@ -247,10 +247,5 @@ class PositionApplicator:
         if existing is None or rank < existing[0]:
             overrides[original_id] = (rank, payload)
 
-    @staticmethod
-    def _compute_copy_rank(node_obj: Any) -> Tuple[int, int]:
-        # 兼容旧接口：转发到 utils.copy_identity_utils
-        return compute_copy_rank(node_obj)
-
 
 

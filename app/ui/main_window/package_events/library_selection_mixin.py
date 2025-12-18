@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from app.models.view_modes import ViewMode
+from engine.utils.logging.logger import log_info
+from app.ui.graph.library_pages.library_scaffold import LibrarySelection
 
 
 class LibrarySelectionMixin:
@@ -34,10 +36,8 @@ class LibrarySelectionMixin:
                 clear_method()
             if hasattr(self, "property_panel"):
                 self.property_panel.clear()
-            if hasattr(self, "_ensure_property_tab_visible"):
-                self._ensure_property_tab_visible(False)
-            if hasattr(self, "_update_right_panel_visibility"):
-                self._update_right_panel_visibility()
+            self.right_panel.ensure_visible("property", visible=False)
+            self.right_panel.update_visibility()
             return
 
         if current_view_mode == ViewMode.PLACEMENT or source == "instance":
@@ -47,10 +47,8 @@ class LibrarySelectionMixin:
                 clear_method()
             if hasattr(self, "property_panel"):
                 self.property_panel.clear()
-            if hasattr(self, "_ensure_property_tab_visible"):
-                self._ensure_property_tab_visible(False)
-            if hasattr(self, "_update_right_panel_visibility"):
-                self._update_right_panel_visibility()
+            self.right_panel.ensure_visible("property", visible=False)
+            self.right_panel.update_visibility()
             return
 
         is_combat_event = source == "combat" or section_key in (
@@ -75,8 +73,47 @@ class LibrarySelectionMixin:
             self._reset_management_panels_for_empty_selection(section_key)
             return
 
-        if hasattr(self, "_update_right_panel_visibility"):
-            self._update_right_panel_visibility()
+        self.right_panel.update_visibility()
+
+    def _on_library_page_selection_changed(self, selection: object) -> None:
+        """统一处理库页 selection_changed(LibrarySelection | None)。
+
+        页面侧仍负责在“无选中”时调用 notify_selection_state(False, context=...) 触发右侧收起；
+        此方法只负责在“有选中”时将其分发到既有的 *_selected 处理链路，复用原有
+        ViewMode 限制与右侧面板策略，避免行为漂移。
+        """
+        if selection is None:
+            return
+        if not isinstance(selection, LibrarySelection):
+            return
+
+        if selection.kind == "template":
+            self._on_template_selected(selection.id)
+            return
+
+        if selection.kind == "instance":
+            self._on_instance_selected(selection.id)
+            return
+
+        if selection.kind == "level_entity":
+            self._on_level_entity_selected()
+            return
+
+        if selection.kind == "combat":
+            section_key = ""
+            if isinstance(selection.context, dict):
+                raw = selection.context.get("section_key")
+                if isinstance(raw, str):
+                    section_key = raw
+            if section_key == "player_template":
+                self._on_player_template_selected(selection.id)
+            elif section_key == "player_class":
+                self._on_player_class_selected(selection.id)
+            elif section_key == "skill":
+                self._on_skill_selected(selection.id)
+            elif section_key == "item":
+                self._on_item_selected(selection.id)
+            return
 
     def _reset_combat_detail_panels(self) -> None:
         """清空战斗预设模式下的右侧详情标签与上下文。"""
@@ -86,46 +123,24 @@ class LibrarySelectionMixin:
             if panel is not None and hasattr(panel, "set_context"):
                 panel.set_context(None, None)  # type: ignore[arg-type]
 
-        policy = getattr(self, "right_panel_policy", None)
-        reset_method = getattr(policy, "reset_combat_detail_tabs", None)
-        if callable(reset_method):
-            reset_method()
-        if hasattr(self, "_update_right_panel_visibility"):
-            self._update_right_panel_visibility()
+        self.right_panel.reset_combat_detail_tabs()
+        self.right_panel.update_visibility()
 
     def _reset_management_panels_for_empty_selection(self, section_key: str | None) -> None:
         """清空管理模式下的属性与专用编辑标签。"""
         if hasattr(self, "management_property_panel"):
             self.management_property_panel.clear()
-        if hasattr(self, "_ensure_management_property_tab_visible"):
-            self._ensure_management_property_tab_visible(False)
+        self.right_panel.ensure_visible("management_property", visible=False)
+        self.right_panel.apply_management_selection(section_key, has_selection=False)
 
-        if section_key == "signals":
-            if hasattr(self, "_update_signal_property_panel_for_selection"):
-                self._update_signal_property_panel_for_selection(False)
-        elif section_key in ("struct_definitions", "ingame_struct_definitions"):
-            if hasattr(self, "_update_struct_property_panel_for_selection"):
-                self._update_struct_property_panel_for_selection(False)
-        elif section_key == "main_cameras":
-            if hasattr(self, "_update_main_camera_panel_for_selection"):
-                self._update_main_camera_panel_for_selection(False)
-        elif section_key == "peripheral_systems":
-            if hasattr(self, "_update_peripheral_system_panel_for_selection"):
-                self._update_peripheral_system_panel_for_selection(False)
-        elif section_key == "equipment_entries":
-            if hasattr(self, "_update_equipment_entry_panel_for_selection"):
-                self._update_equipment_entry_panel_for_selection(False)
-        elif section_key == "equipment_tags":
-            if hasattr(self, "_update_equipment_tag_panel_for_selection"):
-                self._update_equipment_tag_panel_for_selection(False)
-        elif section_key == "equipment_types":
-            if hasattr(self, "_update_equipment_type_panel_for_selection"):
-                self._update_equipment_type_panel_for_selection(False)
+        get_coordinator = getattr(self, "_get_management_panels_coordinator", None)
+        if callable(get_coordinator):
+            coordinator = get_coordinator()
+            reset_method = getattr(coordinator, "reset_special_panels", None)
+            if callable(reset_method):
+                reset_method(self)
 
-        if hasattr(self, "_hide_all_management_edit_pages"):
-            self._hide_all_management_edit_pages(None)  # type: ignore[attr-defined]
-        if hasattr(self, "_update_right_panel_visibility"):
-            self._update_right_panel_visibility()
+        self.right_panel.update_visibility()
 
     def _on_template_selected(self, template_id: str) -> None:
         """模板选中"""
@@ -149,13 +164,12 @@ class LibrarySelectionMixin:
                 self.package_controller.current_package,
                 template_id,
             )
-            self._ensure_property_tab_visible(True)
+            self.right_panel.ensure_visible("property", visible=True, switch_to=True)
             view_state = getattr(self, "view_state", None)
             template_state = getattr(view_state, "template", None)
             if template_state is not None:
                 setattr(template_state, "template_id", str(template_id))
-            if hasattr(self, "_schedule_ui_session_state_save"):
-                self._schedule_ui_session_state_save()
+            self.schedule_ui_session_state_save()
 
     def _on_instance_selected(self, instance_id: str) -> None:
         """实例选中"""
@@ -179,14 +193,13 @@ class LibrarySelectionMixin:
                 self.package_controller.current_package,
                 instance_id,
             )
-            self._ensure_property_tab_visible(True)
+            self.right_panel.ensure_visible("property", visible=True, switch_to=True)
             view_state = getattr(self, "view_state", None)
             placement_state = getattr(view_state, "placement", None)
             if placement_state is not None:
                 setattr(placement_state, "instance_id", str(instance_id))
                 setattr(placement_state, "has_level_entity_selected", False)
-            if hasattr(self, "_schedule_ui_session_state_save"):
-                self._schedule_ui_session_state_save()
+            self.schedule_ui_session_state_save()
 
     def _on_level_entity_selected(self) -> None:
         """关卡实体选中"""
@@ -198,13 +211,12 @@ class LibrarySelectionMixin:
         package = self.package_controller.current_package
         if package and package.level_entity:
             self.property_panel.set_level_entity(package)
-            self._ensure_property_tab_visible(True)
+            self.right_panel.ensure_visible("property", visible=True, switch_to=True)
             view_state = getattr(self, "view_state", None)
             placement_state = getattr(view_state, "placement", None)
             if placement_state is not None:
                 setattr(placement_state, "has_level_entity_selected", True)
-            if hasattr(self, "_schedule_ui_session_state_save"):
-                self._schedule_ui_session_state_save()
+            self.schedule_ui_session_state_save()
 
     # === 战斗预设 ===
 
@@ -212,10 +224,11 @@ class LibrarySelectionMixin:
         """战斗预设-玩家模板选中"""
         package = self.package_controller.current_package
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-        print(
-            "[COMBAT-PRESETS] _on_player_template_selected:",
-            f"template_id={template_id!r}, current_view_mode={current_view_mode}, "
-            f"has_package={bool(package)}",
+        log_info(
+            "[COMBAT-PRESETS] player_template_selected: template_id={} current_view_mode={} has_package={}",
+            template_id,
+            current_view_mode,
+            bool(package),
         )
         if current_view_mode != ViewMode.COMBAT:
             self._set_pending_combat_selection("player_template", template_id)
@@ -234,19 +247,17 @@ class LibrarySelectionMixin:
             setattr(combat_state, "current_section_key", "player_template")
             setattr(combat_state, "current_item_id", str(template_id))
         if current_view_mode == ViewMode.COMBAT:
-            policy = getattr(self, "right_panel_policy", None)
-            set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-            if callable(set_method):
-                set_method(player_template=True)
+            self.right_panel.set_combat_detail_tabs_visible(player_template=True)
 
     def _on_skill_selected(self, skill_id: str) -> None:
         """战斗预设-技能选中"""
         package = self.package_controller.current_package
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-        print(
-            "[COMBAT-PRESETS] _on_skill_selected:",
-            f"skill_id={skill_id!r}, current_view_mode={current_view_mode}, "
-            f"has_package={bool(package)}",
+        log_info(
+            "[COMBAT-PRESETS] skill_selected: skill_id={} current_view_mode={} has_package={}",
+            skill_id,
+            current_view_mode,
+            bool(package),
         )
         if current_view_mode != ViewMode.COMBAT:
             self._set_pending_combat_selection("skill", skill_id)
@@ -266,21 +277,18 @@ class LibrarySelectionMixin:
             setattr(combat_state, "current_item_id", str(skill_id))
         # 在战斗预设模式下选中技能时，自动切到“技能”标签，并按需插入对应标签页
         if current_view_mode == ViewMode.COMBAT:
-            policy = getattr(self, "right_panel_policy", None)
-            set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-            if callable(set_method):
-                set_method(skill=True)
-            if hasattr(self, "right_panel_registry"):
-                self.right_panel_registry.switch_to("skill_editor")
+            self.right_panel.set_combat_detail_tabs_visible(skill=True)
+            self.right_panel.switch_to("skill_editor")
 
     def _on_item_selected(self, item_id: str) -> None:
         """战斗预设-道具选中"""
         package = self.package_controller.current_package
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-        print(
-            "[COMBAT-PRESETS] _on_item_selected:",
-            f"item_id={item_id!r}, current_view_mode={current_view_mode}, "
-            f"has_package={bool(package)}",
+        log_info(
+            "[COMBAT-PRESETS] item_selected: item_id={} current_view_mode={} has_package={}",
+            item_id,
+            current_view_mode,
+            bool(package),
         )
         if current_view_mode != ViewMode.COMBAT:
             self._set_pending_combat_selection("item", item_id)
@@ -299,21 +307,18 @@ class LibrarySelectionMixin:
             setattr(combat_state, "current_section_key", "item")
             setattr(combat_state, "current_item_id", str(item_id))
         if current_view_mode == ViewMode.COMBAT:
-            policy = getattr(self, "right_panel_policy", None)
-            set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-            if callable(set_method):
-                set_method(item=True)
-            if hasattr(self, "right_panel_registry"):
-                self.right_panel_registry.switch_to("item_editor")
+            self.right_panel.set_combat_detail_tabs_visible(item=True)
+            self.right_panel.switch_to("item_editor")
 
     def _on_player_class_selected(self, class_id: str) -> None:
         """战斗预设-职业选中"""
         package = self.package_controller.current_package
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-        print(
-            "[COMBAT-PRESETS] _on_player_class_selected:",
-            f"class_id={class_id!r}, current_view_mode={current_view_mode}, "
-            f"has_package={bool(package)}",
+        log_info(
+            "[COMBAT-PRESETS] player_class_selected: class_id={} current_view_mode={} has_package={}",
+            class_id,
+            current_view_mode,
+            bool(package),
         )
         if current_view_mode != ViewMode.COMBAT:
             self._set_pending_combat_selection("player_class", class_id)
@@ -328,11 +333,7 @@ class LibrarySelectionMixin:
         self.player_class_panel.set_context(package, class_id)
         # 在战斗预设模式下选中职业时，将右侧当前标签切换到“职业”详情，并按需插入对应标签页
         if current_view_mode == ViewMode.COMBAT:
-            policy = getattr(self, "right_panel_policy", None)
-            set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-            if callable(set_method):
-                set_method(player_class=True)
-            if hasattr(self, "right_panel_registry"):
-                self.right_panel_registry.switch_to("player_class_editor")
+            self.right_panel.set_combat_detail_tabs_visible(player_class=True)
+            self.right_panel.switch_to("player_class_editor")
 
 

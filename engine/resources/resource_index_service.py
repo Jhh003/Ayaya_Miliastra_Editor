@@ -13,6 +13,7 @@ from engine.resources.resource_index_builder import ResourceIndexBuilder
 from engine.utils.logging.logger import log_info
 from engine.utils.cache.cache_paths import get_name_sync_state_file
 from .resource_file_ops import ResourceFileOps
+from .resource_filename_policy import resource_type_should_sync_json_name_with_filename
 from .resource_state import ResourceIndexState
 from .atomic_json import atomic_write_json
 
@@ -62,15 +63,13 @@ class ResourceIndexService:
         filename_without_ext: str,
         preloaded_data: Optional[dict] = None,
     ) -> bool:
-        """检查文件名与内部 name 字段是否一致，如需要则执行同步。"""
-        data_payload: Optional[dict] = preloaded_data
+        """检查文件名与内部 name 字段是否一致，并按策略执行同步。
 
-        if resource_type == ResourceType.INSTANCE:
-            if data_payload is None:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data_payload = json.load(f)
-            if data_payload.get("metadata", {}).get("is_level_entity", False):
-                return False
+        重要：仅对“保存时以 name 驱动物理文件名”的 JSON 资源类型允许做
+        “文件名 -> name”的写回同步。否则会与 `id_to_filename_cache` 的默认
+        “沿用旧文件名”策略冲突，导致 UI 改名被扫描回滚。
+        """
+        data_payload: Optional[dict] = preloaded_data
 
         if resource_type == ResourceType.GRAPH:
             metadata = load_graph_metadata_from_file(file_path)
@@ -96,6 +95,11 @@ class ResourceIndexService:
                     return False
             return False
 
+        # 对于大多数 JSON 资源类型：name 与文件名允许解耦（保存默认沿用缓存文件名），
+        # 扫描阶段不应再把 name 强行写回为文件名，否则会造成改名回滚。
+        if not resource_type_should_sync_json_name_with_filename(resource_type):
+            return False
+
         if data_payload is None:
             with open(file_path, "r", encoding="utf-8") as f:
                 data_payload = json.load(f)
@@ -109,8 +113,8 @@ class ResourceIndexService:
             data_payload["name"] = filename_without_ext
             data_payload["updated_at"] = datetime.now().isoformat()
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(data_payload, f, ensure_ascii=False, indent=2)
+            # 原子写，避免中断导致 JSON 半写入
+            atomic_write_json(file_path, data_payload, ensure_ascii=False, indent=2)
 
             log_info(
                 "  [文件名同步] {}: name字段 '{}' -> '{}'",

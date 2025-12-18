@@ -7,6 +7,7 @@ from typing import Dict, Optional
 
 from engine.configs.resource_types import ResourceType
 from engine.utils.name_utils import sanitize_resource_filename
+from .resource_filename_policy import resource_type_prefers_name_over_cached_filename
 
 
 class ResourceFileOps:
@@ -69,34 +70,9 @@ class ResourceFileOps:
         # 默认行为：若已有文件名缓存，则继续沿用，避免因为显示名称调整导致物理文件频繁重命名。
         use_cached_filename = resource_id in cached_bucket
 
-        # 一些资源在保存时显式以“业务名称”驱动物理文件名，便于在资源库中按名称直接识别 JSON。
-        # 这里包含：
-        # - 部分战斗预设与管理配置：聊天频道、装备数据、主镜头、预设点、外围系统、局内存档管理
-        # - 以及典型多记录管理配置：计时器、关卡变量、技能资源、商店模板、路径、背景音乐、光源、
-        #   实体布设组、单位标签、护盾、扫描标签、UI 布局与 UI 控件模板等。
-        resources_prefer_name_over_cached = {
-            ResourceType.CHAT_CHANNEL,
-            ResourceType.EQUIPMENT_DATA,
-            ResourceType.MAIN_CAMERA,
-            ResourceType.PRESET_POINT,
-            ResourceType.PERIPHERAL_SYSTEM,
-            ResourceType.SAVE_POINT,
-            # 多条记录的管理配置
-            ResourceType.TIMER,
-            ResourceType.LEVEL_VARIABLE,
-            ResourceType.SKILL_RESOURCE,
-            ResourceType.SHOP_TEMPLATE,
-            ResourceType.PATH,
-            ResourceType.BACKGROUND_MUSIC,
-            ResourceType.LIGHT_SOURCE,
-            ResourceType.ENTITY_DEPLOYMENT_GROUP,
-            ResourceType.UNIT_TAG,
-            ResourceType.SCAN_TAG,
-            ResourceType.SHIELD,
-            ResourceType.UI_LAYOUT,
-            ResourceType.UI_WIDGET_TEMPLATE,
-        }
-        if resource_name and resource_type in resources_prefer_name_over_cached:
+        # 一些资源在保存时显式以“业务名称”驱动物理文件名（覆盖缓存文件名），便于在资源库中按名称直接识别 JSON。
+        # 规则的单一真源在 `resource_filename_policy.py`，避免与索引扫描的 name 同步策略漂移。
+        if resource_name and resource_type_prefers_name_over_cached_filename(resource_type):
             use_cached_filename = False
 
         if use_cached_filename:

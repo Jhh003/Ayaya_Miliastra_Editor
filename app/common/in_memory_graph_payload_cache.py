@@ -10,6 +10,9 @@ from __future__ import annotations
 注意：
 - 本模块仅用于“进程内临时缓存”，不是磁盘持久化缓存；
 - 磁盘持久化的节点图缓存由 `engine.resources.persistent_graph_cache_manager` 管理。
+- 为避免“多入口读写/失效”导致的数据源分叉：应用层代码应统一通过
+  `app.runtime.services.graph_data_service.GraphDataService` 桥接本模块；
+  `app/ui` 与 `app/models` 不应直接 import 本模块。
 """
 
 from threading import RLock

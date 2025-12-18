@@ -17,7 +17,7 @@ class ResourceMembershipMixin:
 
         设计约定：
         - PackageController.current_package_index 视为“当前存档索引”的权威内存副本；
-        - 命中当前存档的“所属存档”变更优先更新该对象，再通过 save_package() 统一落盘；
+        - 命中当前存档的“所属存档”变更优先更新内存索引与视图缓存，再通过脏块保存链路落盘；
         - 其它存档仍通过 PackageIndexManager.add/remove_resource_from_package 即时落盘。
         """
         if not hasattr(self, "package_controller"):
@@ -105,25 +105,27 @@ class ResourceMembershipMixin:
         # 非当前存档：立即通过 PackageIndexManager 更新并落盘
         if getattr(self.package_controller, "current_package_id", None) != package_id:
             if is_checked:
-                self.package_index_manager.add_resource_to_package(
+                self.app_state.package_index_manager.add_resource_to_package(
                     package_id,
                     "graph",
                     graph_id,
                 )
             else:
-                self.package_index_manager.remove_resource_from_package(
+                self.app_state.package_index_manager.remove_resource_from_package(
                     package_id,
                     "graph",
                     graph_id,
                 )
 
-        # 当前存档：同步内存索引与视图缓存，落盘由 save_package() 统一处理
+        # 当前存档：同步内存索引与视图缓存，并标记 index_dirty 以便后续按脏块落盘
         self._sync_current_package_index_for_membership(
             package_id,
             "graph",
             graph_id,
             is_checked,
         )
+        if getattr(self.package_controller, "current_package_id", None) == package_id:
+            self._on_immediate_persist_requested(index_dirty=True)
 
         self.graph_property_panel.graph_updated.emit(graph_id)
 
@@ -139,13 +141,13 @@ class ResourceMembershipMixin:
 
         if getattr(self.package_controller, "current_package_id", None) != package_id:
             if is_checked:
-                self.package_index_manager.add_resource_to_package(
+                self.app_state.package_index_manager.add_resource_to_package(
                     package_id,
                     "composite",
                     composite_id,
                 )
             else:
-                self.package_index_manager.remove_resource_from_package(
+                self.app_state.package_index_manager.remove_resource_from_package(
                     package_id,
                     "composite",
                     composite_id,
@@ -157,6 +159,8 @@ class ResourceMembershipMixin:
             composite_id,
             is_checked,
         )
+        if getattr(self.package_controller, "current_package_id", None) == package_id:
+            self._on_immediate_persist_requested(index_dirty=True)
 
     def _on_template_package_membership_changed(
         self,
@@ -170,13 +174,13 @@ class ResourceMembershipMixin:
 
         if getattr(self.package_controller, "current_package_id", None) != package_id:
             if is_checked:
-                self.package_index_manager.add_resource_to_package(
+                self.app_state.package_index_manager.add_resource_to_package(
                     package_id,
                     "template",
                     template_id,
                 )
             else:
-                self.package_index_manager.remove_resource_from_package(
+                self.app_state.package_index_manager.remove_resource_from_package(
                     package_id,
                     "template",
                     template_id,
@@ -191,7 +195,10 @@ class ResourceMembershipMixin:
 
         # 当前存档元件归属变更：立即刷新元件库列表并触发持久化
         if getattr(self.package_controller, "current_package_id", None) == package_id:
-            self._on_data_updated()
+            # 归属变化仅影响 PackageIndex，不应将模板对象本身视为“脏”并写回资源文件；
+            # 这里刷新库页列表，并仅标记 index_dirty 以落盘索引。
+            self._refresh_library_pages_after_property_panel_update()
+            self._on_immediate_persist_requested(index_dirty=True)
 
     def _on_instance_package_membership_changed(
         self,
@@ -205,13 +212,13 @@ class ResourceMembershipMixin:
 
         if getattr(self.package_controller, "current_package_id", None) != package_id:
             if is_checked:
-                self.package_index_manager.add_resource_to_package(
+                self.app_state.package_index_manager.add_resource_to_package(
                     package_id,
                     "instance",
                     instance_id,
                 )
             else:
-                self.package_index_manager.remove_resource_from_package(
+                self.app_state.package_index_manager.remove_resource_from_package(
                     package_id,
                     "instance",
                     instance_id,
@@ -226,6 +233,7 @@ class ResourceMembershipMixin:
 
         # 当前存档实体归属变更：刷新实体摆放/元件库并立即持久化
         if getattr(self.package_controller, "current_package_id", None) == package_id:
-            self._on_data_updated()
+            self._refresh_library_pages_after_property_panel_update()
+            self._on_immediate_persist_requested(index_dirty=True)
 
 

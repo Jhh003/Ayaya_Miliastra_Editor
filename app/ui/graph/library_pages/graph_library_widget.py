@@ -18,6 +18,7 @@ from app.ui.graph.library_pages.library_scaffold import (
     LibraryPageMixin,
     LibrarySelection,
 )
+from app.ui.graph.library_pages.library_view_scope import describe_resource_view_scope
 from engine.resources.resource_manager import ResourceManager, ResourceType
 from engine.resources.package_index_manager import PackageIndexManager
 from engine.resources.graph_reference_tracker import GraphReferenceTracker
@@ -108,13 +109,6 @@ class GraphLibraryWidget(
         if self.isVisible():
             self.ensure_default_selection()
 
-    def set_package(
-        self,
-        package: Union[PackageView, GlobalResourceView, UnclassifiedResourceView],
-    ) -> None:
-        """兼容旧接口，内部委托给 set_context。"""
-        self.set_context(package)
-
     def reload(self) -> None:
         """在当前上下文下全量刷新节点图列表并尽量恢复选中。"""
         self._refresh_folder_tree()
@@ -130,7 +124,7 @@ class GraphLibraryWidget(
         return LibrarySelection(
             kind="graph",
             id=graph_id,
-            context={"scope": self._describe_current_scope()},
+            context={"scope": describe_resource_view_scope(self.current_package)},
         )
 
     def set_selection(self, selection: Optional[LibrarySelection]) -> None:
@@ -333,19 +327,7 @@ class GraphLibraryWidget(
     
 
     
-    def refresh(self) -> None:
-        """刷新界面（兼容旧入口，内部委托给 reload）。"""
-        self.reload()
 
-    def _describe_current_scope(self) -> str:
-        """根据当前资源视图返回简单 scope 标识，用于变更事件上下文。"""
-        if isinstance(self.current_package, PackageView):
-            return "package"
-        if isinstance(self.current_package, GlobalResourceView):
-            return "global"
-        if isinstance(self.current_package, UnclassifiedResourceView):
-            return "unclassified"
-        return "unknown"
     
 
     

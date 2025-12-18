@@ -11,7 +11,7 @@ class PortDetected:
     说明：
     - 上层依赖该结构进行端口筛选与连线决策；
     - kind 字段来自模板/识别的原始类型字符串；
-      上层可通过 core.automation._ports.normalize_kind_text 归一化为 flow/data/other；
+      上层可通过 app.automation.ports._ports.normalize_kind_text 归一化为 flow/data/other；
     - confidence 表示底层模板匹配的置信度（0~1），仅在视觉识别链路可用时填充，用于调试展示。
     """
     name_cn: str

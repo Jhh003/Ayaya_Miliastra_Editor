@@ -6,37 +6,74 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any
 from enum import Enum
 
+from engine.type_registry import (
+    TYPE_BOOLEAN,
+    TYPE_BOOLEAN_LIST,
+    TYPE_CAMP,
+    TYPE_CAMP_LIST,
+    TYPE_COMPONENT_ID,
+    TYPE_COMPONENT_ID_LIST,
+    TYPE_CONFIG_ID,
+    TYPE_CONFIG_ID_LIST,
+    TYPE_DICT,
+    TYPE_ENTITY,
+    TYPE_ENTITY_LIST,
+    TYPE_FLOAT,
+    TYPE_FLOAT_LIST,
+    TYPE_GUID,
+    TYPE_GUID_LIST,
+    TYPE_INTEGER,
+    TYPE_INTEGER_LIST,
+    TYPE_STRING,
+    TYPE_STRING_LIST,
+    TYPE_STRUCT,
+    TYPE_STRUCT_LIST,
+    TYPE_VECTOR3,
+    TYPE_VECTOR3_LIST,
+)
+
 
 class VariableDataType(Enum):
     """自定义变量数据类型（自定义变量.md 第7-21行）"""
     # 基础数据类型
-    INTEGER = "整数"
-    FLOAT = "浮点数"
-    STRING = "字符串"
-    BOOLEAN = "布尔值"
-    VECTOR3 = "三维向量"
-    ENTITY = "实体"
-    GUID = "GUID"
-    COMPONENT_ID = "元件ID"
-    CONFIG_ID = "配置ID"
-    CAMP = "阵营"
-    STRUCT = "结构体"
+    INTEGER = TYPE_INTEGER
+    FLOAT = TYPE_FLOAT
+    STRING = TYPE_STRING
+    BOOLEAN = TYPE_BOOLEAN
+    VECTOR3 = TYPE_VECTOR3
+    ENTITY = TYPE_ENTITY
+    GUID = TYPE_GUID
+    COMPONENT_ID = TYPE_COMPONENT_ID
+    CONFIG_ID = TYPE_CONFIG_ID
+    CAMP = TYPE_CAMP
+    STRUCT = TYPE_STRUCT
     
     # 列表数据类型
-    INTEGER_LIST = "整数列表"
-    FLOAT_LIST = "浮点数列表"
-    STRING_LIST = "字符串列表"
-    BOOLEAN_LIST = "布尔值列表"
-    VECTOR3_LIST = "三维向量列表"
-    ENTITY_LIST = "实体列表"
-    GUID_LIST = "GUID列表"
-    COMPONENT_ID_LIST = "元件ID列表"
-    CONFIG_ID_LIST = "配置ID列表"
-    CAMP_LIST = "阵营列表"
-    STRUCT_LIST = "结构体列表"
+    INTEGER_LIST = TYPE_INTEGER_LIST
+    FLOAT_LIST = TYPE_FLOAT_LIST
+    STRING_LIST = TYPE_STRING_LIST
+    BOOLEAN_LIST = TYPE_BOOLEAN_LIST
+    VECTOR3_LIST = TYPE_VECTOR3_LIST
+    ENTITY_LIST = TYPE_ENTITY_LIST
+    GUID_LIST = TYPE_GUID_LIST
+    COMPONENT_ID_LIST = TYPE_COMPONENT_ID_LIST
+    CONFIG_ID_LIST = TYPE_CONFIG_ID_LIST
+    CAMP_LIST = TYPE_CAMP_LIST
+    STRUCT_LIST = TYPE_STRUCT_LIST
     
     # 字典数据类型（所有字典数据类型）
     DICT_ALL = "所有字典数据类型"
+
+    def to_canonical_type_name(self) -> str:
+        """将枚举值映射为引擎的规范中文类型名。
+
+        说明：
+        - `DICT_ALL` 是历史上的“集合类型”表达，用于 UI 选择“字典”这一大类；
+          在需要落到具体类型名时，统一映射为 `字典`。
+        """
+        if self is VariableDataType.DICT_ALL:
+            return TYPE_DICT
+        return str(self.value)
 
 
 @dataclass

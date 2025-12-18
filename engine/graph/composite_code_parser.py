@@ -1,6 +1,6 @@
 """复合节点代码解析器 - 薄封装与调度层
 
-从函数/类格式代码解析为CompositeNodeConfig和虚拟引脚。
+从 payload（可视化落盘）/类格式代码解析为 CompositeNodeConfig 和虚拟引脚。
 委托具体解析工作给专用解析器模块。
 """
 
@@ -12,6 +12,10 @@ from pathlib import Path
 from engine.nodes.node_definition_loader import NodeDef
 from engine.nodes.advanced_node_features import CompositeNodeConfig, MappedPort
 from engine.graph.common import node_name_index_from_library, apply_layout_quietly
+from engine.graph.composite.source_format import (
+    find_primary_composite_class,
+    try_parse_composite_payload,
+)
 from engine.graph.utils.metadata_extractor import (
     GraphMetadata,
     extract_metadata_from_code,
@@ -37,15 +41,22 @@ class CompositeCodeParser:
     5. 构建最终的CompositeNodeConfig
     """
     
-    def __init__(self, node_library: Dict[str, NodeDef], verbose: bool = False):
+    def __init__(
+        self,
+        node_library: Dict[str, NodeDef],
+        verbose: bool = False,
+        workspace_path: Optional[Path] = None,
+    ):
         """初始化解析器
         
         Args:
             node_library: 节点库（键格式："分类/节点名"）
             verbose: 是否输出详细日志
+            workspace_path: 工作区根目录（用于解析阶段的布局上下文构建，避免反向依赖 NodeRegistry）
         """
         self.node_library = node_library
         self.verbose = verbose
+        self.workspace_path = workspace_path
         
         # 建立统一的节点名索引（含同义键）
         self.node_name_index = node_name_index_from_library(node_library)
@@ -68,7 +79,7 @@ class CompositeCodeParser:
         return self.parse_code(code, file_path)
     
     def parse_code(self, code: str, file_path: Optional[Path] = None) -> CompositeNodeConfig:
-        """从代码解析复合节点（仅支持类格式）
+        """从代码解析复合节点（支持：payload / 类格式）
         
         Args:
             code: 源代码
@@ -78,9 +89,15 @@ class CompositeCodeParser:
             CompositeNodeConfig
         """
         tree = ast.parse(code)
+
+        # 0) 优先：可视化编辑器落盘格式（JSON payload）
+        payload_composite = try_parse_composite_payload(tree)
+        if payload_composite is not None:
+            return payload_composite
+
         # 仅支持类格式：使用AST检测并解析带有 @composite_class 装饰器的类
         if not self._detect_class_format(tree):
-            raise ValueError("复合节点仅支持类格式定义：未找到带 @composite_class 装饰器的类")
+            raise ValueError("复合节点仅支持 payload 或类格式定义：未找到 COMPOSITE_PAYLOAD_JSON 且未找到 @composite_class")
         metadata_obj = extract_metadata_from_code(code)
         return self.parse_class_format(code, file_path, tree=tree, metadata_obj=metadata_obj)
     
@@ -142,7 +159,31 @@ class CompositeCodeParser:
         if self.verbose:
             log_info("[CompositeCodeParser] 应用自动布局...")
         
-        apply_layout_quietly(graph_model)
+        from engine.layout.internal.layout_registry_context import LayoutRegistryContext
+        from engine.configs.settings import Settings
+
+        effective_workspace_path: Optional[Path] = self.workspace_path
+        if effective_workspace_path is None:
+            settings_workspace_root = getattr(Settings, "_workspace_root", None)
+            if isinstance(settings_workspace_root, Path):
+                effective_workspace_path = settings_workspace_root
+
+        if effective_workspace_path is None:
+            raise RuntimeError(
+                "无法在复合节点解析阶段应用布局：workspace_path 未提供且 settings 未注入 workspace_root。"
+                "请在调用 CompositeCodeParser 时显式传入 workspace_path，"
+                "或在入口处调用 settings.set_config_path(workspace_path)。"
+            )
+
+        registry_context = LayoutRegistryContext.build_from_node_library(
+            effective_workspace_path,
+            node_library=self.node_library,
+        )
+        apply_layout_quietly(
+            graph_model,
+            node_library=self.node_library,
+            registry_context=registry_context,
+        )
 
         # 7.1 将虚拟引脚映射扩展到布局阶段创建的"数据节点副本"上，保持映射与最终子图一致
         self._propagate_virtual_pin_mappings_to_copies(virtual_pins, graph_model)
@@ -237,7 +278,7 @@ class CompositeCodeParser:
     
     def _detect_class_format(self, tree: ast.Module) -> bool:
         """检测是否为类格式（基于AST）"""
-        return self._find_composite_class(tree) is not None
+        return find_primary_composite_class(tree) is not None
     
     def _find_composite_class(self, tree: ast.Module) -> Optional[ast.ClassDef]:
         """查找带有 @composite_class 装饰器的类定义
@@ -248,12 +289,6 @@ class CompositeCodeParser:
         Returns:
             类定义节点，如果未找到返回None
         """
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                # 检查是否有 @composite_class 装饰器
-                for decorator in node.decorator_list:
-                    if isinstance(decorator, ast.Name) and decorator.id == 'composite_class':
-                        return node
-        return None
+        return find_primary_composite_class(tree)
 
 

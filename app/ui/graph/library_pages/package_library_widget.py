@@ -13,8 +13,17 @@ from engine.resources.unclassified_resource_view import UnclassifiedResourceView
 from app.ui.foundation import input_dialogs
 from app.ui.foundation.theme_manager import Sizes
 from app.ui.foundation.toolbar_utils import apply_standard_toolbar
-from app.ui.graph.library_mixins import SearchFilterMixin, ConfirmDialogMixin
-from app.ui.graph.library_pages.library_scaffold import LibraryChangeEvent, LibraryPageMixin, LibrarySelection
+from app.ui.graph.library_mixins import (
+    SearchFilterMixin,
+    ConfirmDialogMixin,
+    rebuild_list_with_preserved_selection,
+)
+from app.ui.graph.library_pages.library_scaffold import (
+    DualPaneLibraryScaffold,
+    LibraryChangeEvent,
+    LibraryPageMixin,
+    LibrarySelection,
+)
 from app.ui.graph.library_pages.management_tree_helpers import (
     build_management_category_items_for_tree,
 )
@@ -23,10 +32,10 @@ from app.ui.management.section_registry import (
     MANAGEMENT_RESOURCE_ORDER,
     MANAGEMENT_RESOURCE_TITLES,
 )
-from app.ui.panels.panel_scaffold import PanelScaffold, SectionCard
+from app.ui.panels.panel_scaffold import SectionCard
 
 
-class PackageLibraryWidget(PanelScaffold, SearchFilterMixin, ConfirmDialogMixin, LibraryPageMixin):
+class PackageLibraryWidget(DualPaneLibraryScaffold, SearchFilterMixin, ConfirmDialogMixin, LibraryPageMixin):
     """存档页面：列出存档、查看包含内容、重命名与删除。
     
     - 左侧：存档列表
@@ -175,28 +184,23 @@ class PackageLibraryWidget(PanelScaffold, SearchFilterMixin, ConfirmDialogMixin,
         toolbar_layout.addStretch(1)
         self.set_status_widget(toolbar_widget)
 
-        # 分割器
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-
-        # 左侧：存档列表
-        left = SectionCard("存档列表", "选择存档或特殊视图")
         self.package_list = QtWidgets.QListWidget()
         self.package_list.setObjectName("leftPanel")
         self.package_list.setFixedWidth(Sizes.LEFT_PANEL_WIDTH)
         self.package_list.itemSelectionChanged.connect(self._on_package_selected)
         self.package_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        left.add_content_widget(self.package_list, stretch=1)
 
-        splitter.addWidget(left)
-
-        # 右侧：包详情（树）
-        right = SectionCard("存档内容详情", "查看元件、实体、管理配置等资源")
+        # 右侧：包详情（标题 + 树）
+        right_container = QtWidgets.QWidget(self)
+        right_layout = QtWidgets.QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
         self.header_label = QtWidgets.QLabel("")
         header_font = self.header_label.font()
         header_font.setPointSize(Sizes.FONT_LARGE)
         header_font.setBold(True)
         self.header_label.setFont(header_font)
-        right.add_content_widget(self.header_label)
+        right_layout.addWidget(self.header_label)
 
         self.detail_tree = QtWidgets.QTreeWidget()
         self.detail_tree.setHeaderLabels(["类别", "标识/名称", "GUID", "挂载节点图"])
@@ -209,14 +213,16 @@ class PackageLibraryWidget(PanelScaffold, SearchFilterMixin, ConfirmDialogMixin,
         self.detail_tree.itemClicked.connect(self._on_detail_item_activated)
         # 双击明细行时，尝试跳转到对应的编辑页面（元件库 / 实体摆放 / 节点图编辑器）。
         self.detail_tree.itemDoubleClicked.connect(self._on_detail_item_double_clicked)
-        right.add_content_widget(self.detail_tree, stretch=1)
+        right_layout.addWidget(self.detail_tree, 1)
 
-        splitter.addWidget(right)
-
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-
-        self.body_layout.addWidget(splitter, 1)
+        self.build_dual_pane(
+            self.package_list,
+            right_container,
+            left_title="存档列表",
+            left_description="选择存档或特殊视图",
+            right_title="存档内容详情",
+            right_description="查看元件、实体、管理配置等资源",
+        )
 
     # === 辅助：为树节点标记可预览的资源类型 ===
     def _set_item_resource_kind(
@@ -345,13 +351,7 @@ class PackageLibraryWidget(PanelScaffold, SearchFilterMixin, ConfirmDialogMixin,
     def _filter_packages(self, text: str) -> None:
         """根据搜索文本过滤存档列表。"""
         self.filter_list_items(self.package_list, text)
-        current_item = self.package_list.currentItem()
-        if current_item is not None and current_item.isHidden():
-            for i in range(self.package_list.count()):
-                item = self.package_list.item(i)
-                if item is not None and not item.isHidden():
-                    self.package_list.setCurrentItem(item)
-                    break
+        self.ensure_current_item_visible_or_select_first(self.package_list)
 
     # === Helpers ===
     def _display_name(self, resource_type: ResourceType, resource_id: str) -> str:
@@ -413,43 +413,46 @@ class PackageLibraryWidget(PanelScaffold, SearchFilterMixin, ConfirmDialogMixin,
     def refresh(self) -> None:
         """刷新存档列表"""
         self._clear_display_name_cache()
-        self.package_list.clear()
-        # 先插入两类特殊视图
-        item_global = QtWidgets.QListWidgetItem("全部存档")
-        item_global.setData(QtCore.Qt.ItemDataRole.UserRole, "global_view")
-        item_global.setToolTip("浏览全部资源（不可重命名/删除）")
-        self.package_list.addItem(item_global)
+        previous_key = self._current_package_id or None
 
-        item_uncat = QtWidgets.QListWidgetItem("未分类存档")
-        item_uncat.setData(QtCore.Qt.ItemDataRole.UserRole, "unclassified_view")
-        item_uncat.setToolTip("浏览未被任何存档纳入的资源（不可重命名/删除）")
-        self.package_list.addItem(item_uncat)
+        def build_items() -> None:
+            # 先插入两类特殊视图
+            item_global = QtWidgets.QListWidgetItem("全部存档")
+            item_global.setData(QtCore.Qt.ItemDataRole.UserRole, "global_view")
+            item_global.setToolTip("浏览全部资源（不可重命名/删除）")
+            self.package_list.addItem(item_global)
 
-        # 再加载普通存档
-        packages = self.pim.list_packages()
-        for pkg in packages:
-            item = QtWidgets.QListWidgetItem(pkg["name"])  # 文本为名称
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, pkg["package_id"])  # 存放ID
-            description = pkg.get("description", "")
-            if description:
-                item.setToolTip(description)
-            self.package_list.addItem(item)
+            item_uncat = QtWidgets.QListWidgetItem("未分类存档")
+            item_uncat.setData(QtCore.Qt.ItemDataRole.UserRole, "unclassified_view")
+            item_uncat.setToolTip("浏览未被任何存档纳入的资源（不可重命名/删除）")
+            self.package_list.addItem(item_uncat)
 
-        # 保持选择
-        if self._current_package_id:
-            for i in range(self.package_list.count()):
-                it = self.package_list.item(i)
-                if it is not None:
-                    if it.data(QtCore.Qt.ItemDataRole.UserRole) == self._current_package_id:
-                        self.package_list.setCurrentRow(i)
-                        break
+            # 再加载普通存档
+            packages = self.pim.list_packages()
+            for pkg in packages:
+                item = QtWidgets.QListWidgetItem(pkg["name"])  # 文本为名称
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, pkg["package_id"])  # 存放ID
+                description = pkg.get("description", "")
+                if description:
+                    item.setToolTip(description)
+                self.package_list.addItem(item)
 
-        if self.package_list.count() > 0 and not self._current_package_id:
-            self.package_list.setCurrentRow(0)
+        def get_item_key(list_item: QtWidgets.QListWidgetItem) -> Optional[str]:
+            value = list_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(value, str):
+                return value
+            return None
 
-        if self.package_list.count() == 0:
-            self._current_package_id = ""
-            self._render_empty_detail()
+        rebuild_list_with_preserved_selection(
+            self.package_list,
+            previous_key=previous_key,
+            had_selection_before_refresh=bool(previous_key),
+            build_items=build_items,
+            key_getter=get_item_key,
+            on_restored_selection=None,
+            on_first_selection=None,
+            on_cleared_selection=None,
+        )
 
         # 重新应用当前搜索过滤，保持搜索体验一致
         if hasattr(self, "search_edit") and self.search_edit is not None:
@@ -463,6 +466,11 @@ class PackageLibraryWidget(PanelScaffold, SearchFilterMixin, ConfirmDialogMixin,
             self._update_action_state()
             return
         pkg_id = items[0].data(QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(pkg_id, str) or not pkg_id:
+            self._current_package_id = ""
+            self._render_empty_detail()
+            self._update_action_state()
+            return
         self._current_package_id = pkg_id
         self._render_package_detail(pkg_id)
         self._update_action_state()

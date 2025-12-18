@@ -38,10 +38,17 @@ from .rules.code_structure_rules import (
     StructNameRequiredRule,
     LocalVarInitialValueRule,
 )
-from .rules.code_quality_rules import LongWireRule, EventMultipleFlowOutputsRule, UnusedQueryOutputRule, UnreachableCodeRule
+from .rules.code_quality_rules import (
+    LongWireRule,
+    EventMultipleFlowOutputsRule,
+    PullEvalReevaluationHazardRule,
+    UnusedQueryOutputRule,
+    UnreachableCodeRule,
+)
 from .rules.code_port_types_match import PortTypesMatchRule
 from .rules.composite_types_nesting import CompositeTypesAndNestingRule
 from .rules.node_index import clear_node_index_caches
+from engine.nodes.composite_file_policy import is_composite_definition_file
 
 _RULE_CACHE: Dict[Tuple[bool, Tuple[Any, ...]], List[ValidationRule[EngineIssue]]] = {}
 
@@ -54,14 +61,9 @@ def _freeze_config_value(value: Any) -> Any:
     return value
 
 
-def _is_composite_file(path: Path, workspace: Path) -> bool:
-    """判断文件是否属于复合节点库路径。"""
-    path_resolved = path.resolve()
-    workspace_resolved = workspace.resolve()
-    relative_parts = path_resolved.parts
-    if hasattr(path_resolved, "is_relative_to") and path_resolved.is_relative_to(workspace_resolved):
-        relative_parts = path_resolved.relative_to(workspace_resolved).parts
-    return ("复合节点库" in relative_parts) or path_resolved.name.startswith("composite_")
+def _is_composite_file(path: Path) -> bool:
+    """判断文件是否应按“复合节点”规则集校验。"""
+    return is_composite_definition_file(path)
 
 
 def _build_rules(config: Dict[str, Any], *, is_composite: bool) -> List[ValidationRule[EngineIssue]]:
@@ -117,6 +119,7 @@ def _build_rules(config: Dict[str, Any], *, is_composite: bool) -> List[Validati
                 TypeNameRule(),
                 LongWireRule(),
                 EventMultipleFlowOutputsRule(),
+                PullEvalReevaluationHazardRule(),
                 SignalParamNamesRule(),
                 StructNameRequiredRule(),
                 LocalVarInitialValueRule(),
@@ -182,7 +185,7 @@ def validate_files(
         ctx = ValidationContext(
             workspace_path=workspace,
             file_path=file_path,
-            is_composite=_is_composite_file(file_path, workspace),
+            is_composite=_is_composite_file(file_path),
             config=config,
         )
         pipeline = composite_pipeline if ctx.is_composite else standard_pipeline

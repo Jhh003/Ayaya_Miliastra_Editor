@@ -1,19 +1,33 @@
-"""去重实现文件中相邻的重复 @node_spec 装饰器（保留最后一个）。
+"""去重实现文件中相邻的重复 `@node_spec(...)` 装饰器（保留最后一个）。
+
+当前仓库节点实现以 `plugins/nodes/` 为源，节点定义/发现/校验统一走 V2 AST 管线。
+本脚本仅处理 V2 发现清单中的实现文件（自动排除 shared/helpers 与 __init__.py）。
 
 用法：
-    python -X utf8 tools/dedupe_node_specs.py
+  仅检查（默认，不改写文件，发现问题返回非零码）：
+    python -X utf8 -m tools.dedupe_node_specs
+
+  应用修复（会改写源码文件）：
+    python -X utf8 -m tools.dedupe_node_specs --apply
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+from typing import Optional, Sequence
+
+from engine.nodes.pipeline.discovery import discover_implementation_files
+
+if __package__:
+    from ._bootstrap import ensure_workspace_root_on_sys_path, get_workspace_root
+else:
+    from _bootstrap import ensure_workspace_root_on_sys_path, get_workspace_root
+
+ensure_workspace_root_on_sys_path()
 
 
-ROOT = Path(__file__).parent.parent
-IMPL_DIR = ROOT / "node_implementations"
-
-
-def process_file(path: Path) -> int:
+def process_file(path: Path, *, apply: bool) -> int:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
 
@@ -71,22 +85,39 @@ def process_file(path: Path) -> int:
                 for idx in range(s, e + 1):
                     out.append(lines[idx])
 
-    if removed_lines > 0:
+    if removed_lines > 0 and apply:
         path.write_text("".join(out), encoding="utf-8")
     return removed_lines
 
 
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="去重相邻重复的 @node_spec 装饰器（以 V2 发现清单为扫描源）")
+    parser.add_argument("--apply", action="store_true", help="应用修复（会改写源码文件）")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    workspace_root = get_workspace_root()
+    target_files = sorted(discover_implementation_files(workspace_root))
+
     total_removed = 0
-    for py in sorted(IMPL_DIR.glob("*_impl.py")):
-        removed = process_file(py)
+    for py_file in target_files:
+        removed = process_file(py_file, apply=bool(args.apply))
         if removed:
-            print(f"[fix] {py.name} - removed {removed} duplicate decorator lines")
+            action = "fix" if bool(args.apply) else "would-fix"
+            print(f"[{action}] {py_file} - removed {removed} duplicate decorator lines")
         total_removed += removed
-    print(f"[DONE] removed total {total_removed} duplicate decorator lines")
+
+    if total_removed > 0:
+        if bool(args.apply):
+            print(f"[DONE] removed total {total_removed} duplicate decorator lines")
+            return 0
+        print(f"[ERROR] found {total_removed} duplicate decorator lines (run with --apply to fix)")
+        return 1
+
+    print("[OK] no duplicate @node_spec decorator blocks found")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 
 

@@ -36,10 +36,6 @@ class RichTextItemDelegate(QtWidgets.QStyledItemDelegate):
         index: QtCore.QModelIndex,
     ) -> None:
         tokens = index.data(self._rich_role)
-        if not isinstance(tokens, list) or len(tokens) == 0:
-            super().paint(painter, option, index)
-            return
-
         is_dimmed = bool(index.data(self._dimmed_role))
 
         # 让样式系统先绘制背景/选中态/复选框/图标等，再在文本区域内部自绘文字
@@ -50,6 +46,28 @@ class RichTextItemDelegate(QtWidgets.QStyledItemDelegate):
             if styled_option.widget is not None
             else QtWidgets.QApplication.style()
         )
+
+        # tokens 缺失时也应支持置灰：通过覆盖 palette 的文本色实现，
+        # 避免依赖 item.setForeground() 导致需要整树刷新才能恢复。
+        if not isinstance(tokens, list) or len(tokens) == 0:
+            if is_dimmed:
+                disabled_color = QtGui.QColor(Colors.TEXT_DISABLED)
+                styled_option.palette.setColor(
+                    QtGui.QPalette.ColorRole.Text, disabled_color
+                )
+                styled_option.palette.setColor(
+                    QtGui.QPalette.ColorRole.WindowText, disabled_color
+                )
+                styled_option.palette.setColor(
+                    QtGui.QPalette.ColorRole.HighlightedText, disabled_color
+                )
+            style.drawControl(
+                QtWidgets.QStyle.ControlElement.CE_ItemViewItem,
+                styled_option,
+                painter,
+                styled_option.widget,
+            )
+            return
 
         option_without_text = QtWidgets.QStyleOptionViewItem(styled_option)
         option_without_text.text = ""

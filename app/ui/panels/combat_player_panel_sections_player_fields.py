@@ -68,67 +68,10 @@ class CombatPlayerPanelSectionsPlayerFieldsMixin:
         self.profession_combo.setCurrentText(profession_id)
         self.profession_combo.blockSignals(False)
 
-        # 加载复苏属性
-        resurrection_data = player_section.get("resurrection", {})
-        if not isinstance(resurrection_data, dict):
-            resurrection_data = {}
-
-        self.allow_resurrection_check.blockSignals(True)
-        self.allow_resurrection_check.setChecked(
-            resurrection_data.get("allow_resurrection", False)
-        )
-        self.allow_resurrection_check.blockSignals(False)
-
-        self.show_resurrection_ui_check.blockSignals(True)
-        self.show_resurrection_ui_check.setChecked(resurrection_data.get("show_ui", False))
-        self.show_resurrection_ui_check.blockSignals(False)
-
-        self.resurrection_time_spin.blockSignals(True)
-        self.resurrection_time_spin.setValue(float(resurrection_data.get("time", 5.0)))
-        self.resurrection_time_spin.blockSignals(False)
-
-        self.auto_resurrection_check.blockSignals(True)
-        self.auto_resurrection_check.setChecked(
-            resurrection_data.get("auto_resurrection", False)
-        )
-        self.auto_resurrection_check.blockSignals(False)
-
-        self.resurrection_count_limit_check.blockSignals(True)
-        self.resurrection_count_limit_check.setChecked(
-            resurrection_data.get("count_limit", False)
-        )
-        self.resurrection_count_limit_check.blockSignals(False)
-
-        self.resurrection_count_spin.blockSignals(True)
-        self.resurrection_count_spin.setValue(int(resurrection_data.get("count", 3)))
-        self.resurrection_count_spin.blockSignals(False)
-
-        resurrection_points = resurrection_data.get("points", [])
-        if isinstance(resurrection_points, list):
-            points_text = "\n".join(str(p) for p in resurrection_points)
-        else:
-            points_text = str(resurrection_points).strip()
-        self.resurrection_points_edit.blockSignals(True)
-        self.resurrection_points_edit.setPlainText(points_text)
-        self.resurrection_points_edit.blockSignals(False)
-
-        rule_mapping = {
-            "nearest": 0,
-            "latest_activated": 1,
-            "highest_priority": 2,
-            "random": 3,
-        }
-        rule = resurrection_data.get("point_rule", "nearest")
-        rule_index = rule_mapping.get(rule, 0)
-        self.resurrection_point_rule_combo.blockSignals(True)
-        self.resurrection_point_rule_combo.setCurrentIndex(rule_index)
-        self.resurrection_point_rule_combo.blockSignals(False)
-
-        self.resurrection_health_ratio_spin.blockSignals(True)
-        self.resurrection_health_ratio_spin.setValue(
-            float(resurrection_data.get("health_ratio", 50.0))
-        )
-        self.resurrection_health_ratio_spin.blockSignals(False)
+        # 加载复苏属性（schema 绑定表单）
+        if hasattr(self, "_player_resurrection_schema_form"):
+            self._player_resurrection_schema_form.set_model(self.player_editor.player)
+            self._player_resurrection_schema_form.load_from_model()
 
         # 加载特殊被击倒损伤
         self.special_knockout_pct_spin.blockSignals(True)

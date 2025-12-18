@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class ExtractedSpec:
     file_path: Path
+    # 节点实现函数名（Python 标识符），用于在运行时从模块中定位具体实现
+    function_name: str = ""
     name: Optional[str] = None
     category: Optional[str] = None
     inputs: List[List[Any]] = field(default_factory=list)
@@ -33,6 +35,7 @@ class ExtractedSpec:
     def from_dict(item: Dict[str, Any]) -> "ExtractedSpec":
         return ExtractedSpec(
             file_path=item.get("file_path"),
+            function_name=str(item.get("function_name") or ""),
             name=item.get("name"),
             category=item.get("category"),
             inputs=list(item.get("inputs") or []),

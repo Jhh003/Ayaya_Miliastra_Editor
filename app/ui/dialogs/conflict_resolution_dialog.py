@@ -97,11 +97,11 @@ class ConflictResolutionDialog(BaseDialog):
                 local_time_label.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_SECONDARY};")
                 time_info_layout.addWidget(local_time_label)
             
-                if self.external_modified_time:
-                    external_time_label = QtWidgets.QLabel(
-                        f"🌐 外部修改时间: {self._format_time(self.external_modified_time)}"
-                    )
-                    external_time_label.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_SECONDARY};")
+            if self.external_modified_time:
+                external_time_label = QtWidgets.QLabel(
+                    f"🌐 外部修改时间: {self._format_time(self.external_modified_time)}"
+                )
+                external_time_label.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_SECONDARY};")
                 time_info_layout.addWidget(external_time_label)
             
             layout.addWidget(time_info_widget)

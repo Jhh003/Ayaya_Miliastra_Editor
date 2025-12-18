@@ -37,6 +37,20 @@ VIEW_PAN_STEP_PX_DEFAULT: int = 400
 VIEW_PAN_STEP_PX_CREATION_ANCHOR: int = 420
 
 # =========================
+# 视口对齐鲁棒性保护
+# =========================
+
+# 当连续多次拖拽后，画面（ROI）仍几乎无变化时，通常意味着：
+# - 拖拽起点落在节点/端口等区域导致“右键拖拽不生效”
+# - 编辑器窗口失焦、被遮挡、或右键拖拽行为被 UI 拦截
+# 这种情况下继续按“预期位移”更新坐标映射会快速漂移，因此默认触发中止保护。
+VIEW_PAN_NO_VISUAL_CHANGE_ABORT_CONSECUTIVE_DEFAULT: int = 2
+
+# 判定“画面无明显变化”的平均像素差阈值（越小越严格）。
+# 该值用于多点采样的 mean_abs_diff（0 表示完全一致）。
+VIEW_PAN_NO_VISUAL_CHANGE_MEAN_DIFF_THRESHOLD_DEFAULT: float = 1.0
+
+# =========================
 # 节点拖拽与位置更新阈值
 # =========================
 

@@ -6,6 +6,9 @@ from typing import Any, Dict
 from PyQt6 import QtCore
 
 from engine.nodes.node_registry import get_node_registry
+from engine.utils.logging.logger import log_info, log_warn
+from app.ui.graph.scene_builder import populate_scene_from_model
+from app.runtime.services.graph_data_service import get_shared_graph_data_service
 
 
 class GraphEventsMixin:
@@ -15,8 +18,6 @@ class GraphEventsMixin:
 
     def _on_graph_loaded(self, graph_id: str) -> None:
         """节点图加载完成"""
-        self.model = self.graph_controller.get_current_model()
-        self.scene = self.graph_controller.get_current_scene()
         self.file_watcher_manager.setup_file_watcher(graph_id)
 
         # 同步到 ViewState（单一真源）
@@ -30,8 +31,8 @@ class GraphEventsMixin:
 
         if _VM.from_index(self.central_stack.currentIndex()) == _VM.GRAPH_EDITOR:
             self.graph_property_panel.set_graph(graph_id)
-            self.right_panel_registry.ensure_visible("graph_property", visible=True, switch_to=True)
-            print(f"[MAIN] 已同步图属性面板: graph_id={graph_id}")
+            self.right_panel.ensure_visible("graph_property", visible=True, switch_to=True)
+            log_info("[GRAPH] synced graph_property_panel: graph_id={}", graph_id)
 
         # 与任务清单联动（如果存在对应 Todo 上下文）
         self._ensure_todo_data_loaded()
@@ -41,6 +42,11 @@ class GraphEventsMixin:
     def _on_graph_saved(self, graph_id: str) -> None:
         """节点图保存完成"""
         self.file_watcher_manager.update_last_save_time()
+        # 节点图写盘位于 assets/资源库/节点图/...，会触发资源库目录 watcher；
+        # 这里同步标记为“内部写盘”，避免误触发整库刷新。
+        graph_file_path = self.app_state.resource_manager.get_graph_file_path(graph_id)
+        suppress_directory = graph_file_path.parent if graph_file_path is not None else None
+        self.file_watcher_manager.update_last_resource_write_time(suppress_directory)
 
     def _on_graph_reloaded(self, graph_id: str, graph_data: Dict[str, Any]) -> None:
         """图文件重新加载（来自文件监控）"""
@@ -62,6 +68,31 @@ class GraphEventsMixin:
             container = self.graph_controller.current_graph_container
             self.graph_controller.load_graph(graph_id, graph_data, container)
 
+    def _on_graph_runtime_cache_updated(self, graph_id: str) -> None:
+        """节点图运行期缓存已更新（例如自动排版覆盖持久化缓存 / 强制重解析）。
+
+        目标：统一失效上层缓存，避免出现“某入口刷新后又回退/显示不一致”。
+        """
+        if not isinstance(graph_id, str) or not graph_id:
+            return
+
+        provider = get_shared_graph_data_service(
+            self.app_state.resource_manager,
+            self.app_state.package_index_manager,
+        )
+        provider.drop_payload_for_graph(graph_id)
+        provider.invalidate_graph(graph_id)
+
+        # 失效图属性面板使用的图数据缓存；若面板正在展示该图，则立刻刷新一次。
+        if hasattr(self, "graph_property_panel"):
+            panel = self.graph_property_panel
+            data_provider = getattr(panel, "data_provider", None)
+            invalidate_graph = getattr(data_provider, "invalidate_graph", None) if data_provider is not None else None
+            if callable(invalidate_graph):
+                invalidate_graph(graph_id)
+            if getattr(panel, "current_graph_id", None) == graph_id:
+                panel.set_graph(graph_id)
+
     def _on_open_graph_request(
         self,
         graph_id: str,
@@ -69,9 +100,10 @@ class GraphEventsMixin:
         container: Any,
     ) -> None:
         """打开图请求"""
-        print(
-            "[MAIN] 收到打开图请求: "
-            f"graph_id={graph_id}, container={'Y' if container else 'N'} → 切换到编辑器并加载"
+        log_info(
+            "[GRAPH] open_request: graph_id={} container_present={}",
+            graph_id,
+            bool(container),
         )
         self.graph_controller.open_graph_for_editing(graph_id, graph_data, container)
 
@@ -79,14 +111,16 @@ class GraphEventsMixin:
 
     def _focus_node(self, node_id: str) -> None:
         """聚焦节点"""
-        self.view.highlight_node(node_id)
-        self.view.focus_on_node(node_id)
+        view = self.graph_controller.view
+        view.highlight_node(node_id)
+        view.focus_on_node(node_id)
 
     def _focus_edge(self, src_node_id: str, dst_node_id: str, edge_id: str) -> None:
         """聚焦连线"""
+        view = self.graph_controller.view
         if edge_id:
-            self.view.highlight_edge(edge_id)
-        self.view.focus_on_nodes_and_edge(src_node_id, dst_node_id, edge_id)
+            view.highlight_edge(edge_id)
+        view.focus_on_nodes_and_edge(src_node_id, dst_node_id, edge_id)
 
     # === 属性面板与图库交互 ===
 
@@ -114,8 +148,7 @@ class GraphEventsMixin:
         # 在图库模式下也监控当前选中的节点图，支持外部修改后自动刷新右侧变量视图
         if hasattr(self, "file_watcher_manager"):
             self.file_watcher_manager.setup_file_watcher(graph_id)
-        if hasattr(self, "_schedule_ui_session_state_save"):
-            self._schedule_ui_session_state_save()
+        self.schedule_ui_session_state_save()
 
     def _on_graph_library_double_clicked(
         self,
@@ -134,65 +167,75 @@ class GraphEventsMixin:
 
     def _on_graph_updated_from_property(self, graph_id: str) -> None:
         """图属性面板更新"""
-        self.graph_library_widget.refresh()
+        self.graph_library_widget.reload()
 
     # === 复合节点库与属性联动 ===
 
     def _on_composite_library_updated(self) -> None:
         """复合节点库更新"""
-        registry = get_node_registry(self.workspace_path, include_composite=True)
+        registry = get_node_registry(self.app_state.workspace_path, include_composite=True)
         registry.refresh()
-        self.library = registry.get_library()
+        updated_library = registry.get_library()
+        self.app_state.node_library = updated_library
+        # GraphEditorController/GraphView/GraphScene 的节点库应保持一致
+        self.graph_controller.node_library = updated_library
+        self.graph_controller.view.node_library = updated_library
+        current_scene = self.graph_controller.get_current_scene()
+        current_scene.node_library = updated_library
 
-        self.view.node_library = self.library
-        self.scene.node_library = self.library
-        self.composite_widget.node_library = self.library
+        self.composite_widget.node_library = updated_library
 
-        if self.graph_controller.current_graph_id and self.model:
-            updated_count = self.model.sync_composite_nodes_from_library(self.library)
+        if self.graph_controller.current_graph_id:
+            current_model = self.graph_controller.get_current_model()
+            updated_count = current_model.sync_composite_nodes_from_library(updated_library)
             if updated_count > 0:
-                print(f"  [同步] 已更新 {updated_count} 个复合节点的端口定义")
+                log_info("[COMPOSITE] synced composite node ports: updated_count={}", updated_count)
                 self._refresh_current_graph_display()
 
-        print("✅ 复合节点库已更新")
+        log_info("[COMPOSITE] composite library refreshed")
 
     def _refresh_current_graph_display(self) -> None:
         """刷新当前图显示"""
-        if not self.scene or not hasattr(self, "model"):
-            return
+        current_scene = self.graph_controller.get_current_scene()
 
-        self.scene.clear()
-        self.scene.node_items.clear()
-        self.scene.edge_items.clear()
+        current_scene.clear()
+        current_scene.node_items.clear()
+        current_scene.edge_items.clear()
 
-        for node in self.model.nodes.values():
-            self.scene.add_node_item(node)
-        for edge in self.model.edges.values():
-            self.scene.add_edge_item(edge)
+        populate_scene_from_model(current_scene, enable_batch_mode=True)
 
-        if hasattr(self.scene, "undo_manager") and self.scene.undo_manager:
-            self.scene.undo_manager.clear()
+        if hasattr(current_scene, "undo_manager") and current_scene.undo_manager:
+            current_scene.undo_manager.clear()
 
         self.file_watcher_manager.update_last_save_time()
+        self.file_watcher_manager.update_last_resource_write_time()
 
     def _on_composite_selected(self, composite_id: str) -> None:
         """复合节点选中"""
         composite = self.composite_widget.get_current_composite()
-        print(
-            "[主窗口] 复合节点选中回调: "
-            f"ID={composite_id}, composite={'存在' if composite else '为空'}"
+        log_info(
+            "[COMPOSITE] selected: composite_id={} has_composite={}",
+            composite_id,
+            bool(composite),
         )
 
         if composite:
             self.composite_property_panel.load_composite(composite)
             self.composite_pin_panel.load_composite(composite)
         else:
-            print(f"[主窗口] 警告: 无法获取复合节点 {composite_id}")
+            log_warn("[COMPOSITE] selected but composite not found: composite_id={}", composite_id)
             self.composite_property_panel.clear()
             self.composite_pin_panel.clear()
 
     def _on_jump_to_graph_element(self, jump_info: Dict[str, Any]) -> None:
         """跳转到图元素（例如从预览/验证面板跳转）"""
+        # GraphView 为全局共享画布：在 TODO 预览中触发的 jump 由 todo_binder 处理，
+        # 避免这里再重复响应造成双重导航。
+        from app.models.view_modes import ViewMode
+
+        if ViewMode.from_index(self.central_stack.currentIndex()) == ViewMode.TODO:
+            return
+
         jump_type = jump_info.get("type", "")
         if jump_type == "composite_node":
             composite_name = jump_info.get("composite_name", "")

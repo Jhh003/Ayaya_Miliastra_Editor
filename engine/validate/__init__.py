@@ -22,6 +22,7 @@ from .node_graph_validator import (
     validate_node_graph,
     validate_file,
 )
+from .composite_structural_checks import collect_composite_structural_issues
 
 __all__ = [
     "EngineIssue",
@@ -43,6 +44,7 @@ __all__ = [
     "NodeGraphValidator",
     "validate_node_graph",
     "validate_file",
+    "collect_composite_structural_issues",
 ]
 
  

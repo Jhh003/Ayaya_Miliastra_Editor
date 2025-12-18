@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from app.models.view_modes import ViewMode
 from engine.resources.global_resource_view import GlobalResourceView
+from engine.utils.logging.logger import log_info
 from app.ui.management.section_registry import (
     MANAGEMENT_RESOURCE_BINDINGS,
     MANAGEMENT_RESOURCE_TITLES,
@@ -23,7 +24,7 @@ class PackagesViewMixin:
         - 仅在需要只读预览模板/实例/关卡实体时使用，写入仍通过控制器与 PackageView 完成。
         """
         if not hasattr(self, "_global_resource_view") or self._global_resource_view is None:
-            self._global_resource_view = GlobalResourceView(self.resource_manager)
+            self._global_resource_view = GlobalResourceView(self.app_state.resource_manager)
         return self._global_resource_view
 
     def _hide_packages_basic_property_panel(self) -> None:
@@ -35,17 +36,13 @@ class PackagesViewMixin:
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
         if current_view_mode != ViewMode.PACKAGES:
             return
-        if not hasattr(self, "side_tab"):
-            return
 
         property_panel = getattr(self, "property_panel", None)
         if property_panel is not None:
             clear_method = getattr(property_panel, "clear", None)
             if callable(clear_method):
                 clear_method()
-        ensure_method = getattr(self, "_ensure_property_tab_visible", None)
-        if callable(ensure_method):
-            ensure_method(False)
+        self.right_panel.ensure_visible("property", visible=False)
 
     def _hide_packages_management_property_panel(self) -> None:
         """在存档库模式下收起管理配置通用属性标签。
@@ -57,17 +54,13 @@ class PackagesViewMixin:
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
         if current_view_mode != ViewMode.PACKAGES:
             return
-        if not hasattr(self, "side_tab"):
-            return
 
         management_panel = getattr(self, "management_property_panel", None)
         if management_panel is not None:
             clear_method = getattr(management_panel, "clear", None)
             if callable(clear_method):
                 clear_method()
-        ensure_method = getattr(self, "_ensure_management_property_tab_visible", None)
-        if callable(ensure_method):
-            ensure_method(False)
+        self.right_panel.ensure_visible("management_property", visible=False)
 
     def _on_package_resource_activated(self, kind: str, resource_id: str) -> None:
         """存档库页面中点击资源条目时，在右侧属性或图属性面板中展示详情。
@@ -79,9 +72,11 @@ class PackagesViewMixin:
             - "graph"        → 节点图
         """
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-        print(
-            "[PACKAGES] _on_package_resource_activated:",
-            f"kind={kind!r}, resource_id={resource_id!r}, current_view_mode={current_view_mode}",
+        log_info(
+            "[PACKAGES] resource_activated: kind={} resource_id={} current_view_mode={}",
+            kind,
+            resource_id,
+            current_view_mode,
         )
         if current_view_mode != ViewMode.PACKAGES:
             return
@@ -115,10 +110,7 @@ class PackagesViewMixin:
             if hasattr(self.property_panel, "set_read_only"):
                 # 存档库页面现在允许直接编辑属性，因此显式切换为可编辑模式。
                 self.property_panel.set_read_only(False)
-            if hasattr(self, "_ensure_property_tab_visible"):
-                self._ensure_property_tab_visible(True)
-            if hasattr(self, "side_tab"):
-                self.side_tab.setCurrentWidget(self.property_panel)
+            self.right_panel.ensure_visible("property", visible=True, switch_to=True)
             return
 
         # 节点图：使用图属性面板，允许在此页面管理“所属存档”，其它字段保持只读展示。
@@ -126,50 +118,38 @@ class PackagesViewMixin:
             if not hasattr(self, "graph_property_panel"):
                 return
             self.graph_property_panel.set_graph(resource_id)
-            self.right_panel_registry.ensure_visible("graph_property", visible=True, switch_to=True)
+            self.right_panel.ensure_visible("graph_property", visible=True, switch_to=True)
             return
 
         if hasattr(self, "_schedule_ui_session_state_save"):
-            self._schedule_ui_session_state_save()
+            self.schedule_ui_session_state_save()
 
         # 战斗预设：在存档视图下复用战斗详情面板浏览玩家模板/职业/技能。
         if kind.startswith("combat_"):
-            if not hasattr(self, "side_tab"):
-                return
             global_view = self._get_global_resource_view()
 
             if kind == "combat_player_template":
                 if not hasattr(self, "player_editor_panel"):
                     return
                 self.player_editor_panel.set_context(global_view, resource_id)
-                policy = getattr(self, "right_panel_policy", None)
-                set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-                if callable(set_method):
-                    set_method(player_template=True)
-                self.side_tab.setCurrentWidget(self.player_editor_panel)
+                self.right_panel.set_combat_detail_tabs_visible(player_template=True)
+                self.right_panel.switch_to("player_editor")
             elif kind == "combat_player_class":
                 if not hasattr(self, "player_class_panel"):
                     return
                 self.player_class_panel.set_context(global_view, resource_id)
-                policy = getattr(self, "right_panel_policy", None)
-                set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-                if callable(set_method):
-                    set_method(player_class=True)
-                self.side_tab.setCurrentWidget(self.player_class_panel)
+                self.right_panel.set_combat_detail_tabs_visible(player_class=True)
+                self.right_panel.switch_to("player_class_editor")
             elif kind == "combat_skill":
                 if not hasattr(self, "skill_panel"):
                     return
                 self.skill_panel.set_context(global_view, resource_id)
-                policy = getattr(self, "right_panel_policy", None)
-                set_method = getattr(policy, "set_combat_detail_tabs_visible", None)
-                if callable(set_method):
-                    set_method(skill=True)
-                self.side_tab.setCurrentWidget(self.skill_panel)
+                self.right_panel.set_combat_detail_tabs_visible(skill=True)
+                self.right_panel.switch_to("skill_editor")
             else:
                 return
 
-            if hasattr(self, "_update_right_panel_visibility"):
-                self._update_right_panel_visibility()
+            self.right_panel.update_visibility()
             return
 
     def _on_package_management_resource_activated(
@@ -183,10 +163,11 @@ class PackagesViewMixin:
         - resource_id : 聚合资源 ID；为空字符串时仅表示选中了分类节点
         """
         current_view_mode = ViewMode.from_index(self.central_stack.currentIndex())
-        print(
-            "[PACKAGES] _on_package_management_resource_activated:",
-            f"resource_key={resource_key!r}, resource_id={resource_id!r}, "
-            f"current_view_mode={current_view_mode}",
+        log_info(
+            "[PACKAGES] management_resource_activated: resource_key={} resource_id={} current_view_mode={}",
+            resource_key,
+            resource_id,
+            current_view_mode,
         )
         if current_view_mode != ViewMode.PACKAGES:
             return
@@ -200,8 +181,7 @@ class PackagesViewMixin:
         # 分类节点或上下文不完整时，视为“无有效选中对象”，清空并收起属性标签。
         if not resource_key or not resource_id:
             self.management_property_panel.clear()
-            if hasattr(self, "_ensure_management_property_tab_visible"):
-                self._ensure_management_property_tab_visible(False)
+            self.right_panel.ensure_visible("management_property", visible=False)
             return
 
         # 构建“所属存档”多选行上下文。
@@ -227,7 +207,7 @@ class PackagesViewMixin:
         ]
 
         # 基于资源元数据补充名称 / GUID / 挂载节点图信息（如存在）。
-        resource_manager = getattr(self, "resource_manager", None)
+        resource_manager = self.app_state.resource_manager
         if resource_manager is not None:
             resource_type = MANAGEMENT_RESOURCE_BINDINGS.get(resource_key)
             if resource_type is not None:
@@ -248,15 +228,10 @@ class PackagesViewMixin:
         self.management_property_panel.set_header(title, description)
         self.management_property_panel.set_rows(rows)
 
-        if hasattr(self, "_ensure_management_property_tab_visible"):
-            self._ensure_management_property_tab_visible(True)
-        if hasattr(self, "side_tab"):
-            self.side_tab.setCurrentWidget(self.management_property_panel)
-        if hasattr(self, "_update_right_panel_visibility"):
-            self._update_right_panel_visibility()
+        self.right_panel.ensure_visible("management_property", visible=True, switch_to=True)
+        self.right_panel.update_visibility()
 
-        if hasattr(self, "_schedule_ui_session_state_save"):
-            self._schedule_ui_session_state_save()
+        self.schedule_ui_session_state_save()
 
     def _on_package_management_item_requested(
         self,

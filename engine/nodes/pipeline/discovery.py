@@ -27,9 +27,6 @@ def discover_implementation_files(workspace_path: Path) -> List[Path]:
         # 排除 shared 下的辅助模块
         if (impl_root / "shared") in py.parents:
             continue
-        # 新位置下排除静态注册表文件（不作为实现源参与解析）
-        if py.name == "registry.py" and (impl_root / "registry.py") == py:
-            continue
         discovered.append(py)
 
     def _priority(p: Path) -> int:

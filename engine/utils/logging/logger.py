@@ -35,6 +35,14 @@ def log_info(message: str, *args: Any) -> None:
             print(f"[INFO { _now() }] {message}")
 
 
+def log_print(message: str, *args: Any) -> None:
+    """打印日志。始终输出（用于节点图调试节点，如“打印字符串”）。"""
+    if args:
+        print(f"[PRINT { _now() }] " + message.format(*args))
+    else:
+        print(f"[PRINT { _now() }] {message}")
+
+
 def log_warn(message: str, *args: Any) -> None:
     """警告日志。始终输出。"""
     if args:

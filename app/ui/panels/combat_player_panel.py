@@ -32,6 +32,7 @@ from app.ui.panels.combat_player_panel_sections import (
     _GraphBindingContext,
     _PlayerEditorStruct,
 )
+from app.ui.panels.panel_dict_utils import ensure_nested_dict
 from app.ui.panels.panel_scaffold import PanelScaffold
 from app.ui.panels.template_instance.graphs_tab import GraphsTab
 from app.ui.panels.template_instance_service import TemplateInstanceService
@@ -149,25 +150,8 @@ class CombatPlayerEditorPanel(PanelScaffold, CombatPlayerPanelSectionsMixin):
             return
 
         self.current_template_data = template_data
-        metadata = template_data.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-            template_data["metadata"] = metadata
-
-        player_editor_raw = metadata.get("player_editor")
-        if not isinstance(player_editor_raw, dict):
-            player_editor_raw = {"player": {}, "role": {}}
-            metadata["player_editor"] = player_editor_raw
-
-        player_section = player_editor_raw.get("player")
-        if not isinstance(player_section, dict):
-            player_section = {}
-            player_editor_raw["player"] = player_section
-        role_section = player_editor_raw.get("role")
-        if not isinstance(role_section, dict):
-            role_section = {}
-            player_editor_raw["role"] = role_section
-
+        player_section = ensure_nested_dict(template_data, "metadata", "player_editor", "player")
+        role_section = ensure_nested_dict(template_data, "metadata", "player_editor", "role")
         self.player_editor = _PlayerEditorStruct(player=player_section, role=role_section)
 
         # 为玩家/角色构建节点图上下文，并同步到 GraphsTab

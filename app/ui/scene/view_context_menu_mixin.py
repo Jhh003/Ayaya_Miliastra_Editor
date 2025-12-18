@@ -95,8 +95,10 @@ class SceneViewContextMenuMixin:
             return True
 
         # 在空白处右键：显示“添加节点”菜单（仍复用 GraphView 提供的桥接方法）
-        if item is None and hasattr(view, "_show_add_node_menu"):
-            view._show_add_node_menu(event.globalPos(), scene_pos)
+        from app.ui.graph.graph_view import GraphView
+
+        if item is None and isinstance(view, GraphView):
+            view.show_add_node_menu(event.globalPos(), scene_pos)
             event.accept()
             return True
 

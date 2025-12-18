@@ -28,49 +28,12 @@ from app.automation.ports.port_type_context import (
 )
 from app.automation.ports.port_type_generics import safe_get_port_type_from_node_def
 from engine.graph.models.graph_model import GraphModel, NodeModel
+from engine.type_registry import parse_typed_dict_alias as _parse_typed_dict_alias
 
 
 def parse_typed_dict_alias(type_name: object) -> tuple[bool, str, str]:
-    """解析类似“字符串_GUID列表字典”或“字符串-GUID列表字典”的别名字典类型。
-
-    约定格式：
-    - 统一以“字典”结尾，例如：`字符串_GUID列表字典` 或 `字符串-GUID列表字典`
-    - 以第一个“-”或“_”划分键/值类型名：左侧为键类型，右侧为值类型
-    - 键/值类型名本身必须是已有的合法类型名（例如：整数、字符串、GUID列表等）
-    """
-    if not isinstance(type_name, str):
-        return False, "", ""
-
-    text = type_name.strip()
-    if not text or not text.endswith("字典"):
-        return False, "", ""
-
-    body = text[: -len("字典")].strip()
-    if not body:
-        return False, "", ""
-
-    dash_index = body.find("-")
-    underscore_index = body.find("_")
-
-    separator_index = -1
-    if dash_index >= 0 and underscore_index >= 0:
-        separator_index = min(dash_index, underscore_index)
-    elif dash_index >= 0:
-        separator_index = dash_index
-    else:
-        separator_index = underscore_index
-
-    if separator_index <= 0 or separator_index >= len(body) - 1:
-        return False, "", ""
-
-    key_raw = body[:separator_index]
-    value_raw = body[separator_index + 1 :]
-    key_type = key_raw.strip()
-    value_type = value_raw.strip()
-    if not key_type or not value_type:
-        return False, "", ""
-
-    return True, key_type, value_type
+    """解析别名字典类型（唯一事实来源：engine.type_registry.parse_typed_dict_alias）。"""
+    return _parse_typed_dict_alias(type_name)
 
 
 def infer_dict_key_value_types_for_input(

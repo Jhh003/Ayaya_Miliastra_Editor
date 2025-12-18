@@ -19,24 +19,15 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, TypeVar
 
 from engine.nodes.port_type_system import FLOW_PORT_TYPE
+from engine.type_registry import BASE_TO_LIST_TYPE_MAP as _REGISTRY_BASE_TO_LIST_TYPE_MAP
 from engine.utils.name_utils import dedupe_preserve_order
 
 T = TypeVar("T")
 
 
 
-# 基础类型 → 列表类型映射
-BASE_TO_LIST_MAP: Dict[str, str] = {
-    "实体": "实体列表",
-    "GUID": "GUID列表",
-    "整数": "整数列表",
-    "布尔值": "布尔值列表",
-    "浮点数": "浮点数列表",
-    "字符串": "字符串列表",
-    "三维向量": "三维向量列表",
-    "元件ID": "元件ID列表",
-    "配置ID": "配置ID列表",
-}
+# 基础类型 → 列表类型映射（唯一事实来源：engine.type_registry）
+BASE_TO_LIST_MAP: Dict[str, str] = dict(_REGISTRY_BASE_TO_LIST_TYPE_MAP)
 
 
 def get_non_empty_str(value: object) -> str:

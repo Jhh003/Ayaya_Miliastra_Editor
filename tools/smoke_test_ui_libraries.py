@@ -58,7 +58,7 @@ def _run_template_library_smoke(
         package_like = GlobalResourceView(resource_manager)
 
     widget = TemplateLibraryWidget()
-    widget.set_package(package_like)
+    widget.set_context(package_like)
     widget.refresh_templates()
 
     category_items = getattr(widget, "_category_items", {})
@@ -82,7 +82,7 @@ def _run_entity_placement_smoke(
         package_like = GlobalResourceView(resource_manager)
 
     widget = EntityPlacementWidget()
-    widget.set_package(package_like)
+    widget.set_context(package_like)
     widget.refresh_instances()
 
     category_tree = widget.category_tree
@@ -109,7 +109,9 @@ def _run_graph_library_smoke(
 
     widget = GraphLibraryWidget(resource_manager, package_index_manager)
 
-    widget.refresh()
+    global_view = GlobalResourceView(resource_manager)
+    widget.set_context(global_view)
+    widget.reload()
 
     type_combo = widget.type_combo
     for index in range(type_combo.count()):
@@ -117,8 +119,7 @@ def _run_graph_library_smoke(
 
     widget._filter_graphs("")
 
-    global_view = GlobalResourceView(resource_manager)
-    widget.set_package(global_view)
+    widget.set_context(global_view)
 
 
 def _run_package_library_smoke(
@@ -129,7 +130,7 @@ def _run_package_library_smoke(
     from app.ui.graph.library_pages.package_library_widget import PackageLibraryWidget
 
     widget = PackageLibraryWidget(resource_manager, package_index_manager)
-    widget.refresh()
+    widget.reload()
 
     package_list = widget.package_list
     for row in range(package_list.count()):

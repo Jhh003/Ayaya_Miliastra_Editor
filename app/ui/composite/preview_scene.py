@@ -409,7 +409,8 @@ class CompositeNodePreviewGraphics(QtWidgets.QGraphicsView, ConfirmDialogMixin):
         if pin.is_flow != self.merge_base_pin.is_flow:
             return False
         if pin.pin_type != self.merge_base_pin.pin_type:
-            if pin.pin_type != "any" and self.merge_base_pin.pin_type != "any":
+            # “泛型”仅作为“未设置”的占位：允许用它作为合并兼容的兜底类型（避免类型不同无法合并）。
+            if pin.pin_type != "泛型" and self.merge_base_pin.pin_type != "泛型":
                 return False
         return True
 

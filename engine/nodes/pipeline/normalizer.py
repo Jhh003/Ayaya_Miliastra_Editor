@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
 from .types import ExtractedSpec, NormalizedSpec
@@ -30,6 +31,49 @@ def _pairs_to_type_dict(pairs: List[Tuple[str, str]]) -> Dict[str, str]:
             if port_name_text != "" and type_name_text != "":
                 result[port_name_text] = type_name_text
     return result
+
+
+def _infer_scopes_from_file_path(file_path: Path | None) -> List[str]:
+    """
+    从实现文件路径推断作用域：
+    - plugins/nodes/server/** → ["server"]
+    - plugins/nodes/client/** → ["client"]
+    - 若两者都未命中则返回 []
+    """
+    if file_path is None:
+        return []
+    if not isinstance(file_path, Path):
+        try:
+            file_path = Path(str(file_path))
+        except Exception:
+            # 不做包装，交由上层暴露异常
+            raise
+    parts_lower = [str(p).lower() for p in file_path.parts]
+    inferred: List[str] = []
+    if "server" in parts_lower:
+        inferred.append("server")
+    if "client" in parts_lower:
+        inferred.append("client")
+    return inferred
+
+
+def _normalize_scopes(scopes_list: List[Any], file_path: Path | None) -> List[str]:
+    """
+    统一 scopes 字段：
+    - 若原始 scopes 非空：保留（仅做字符串化与去空）
+    - 若原始 scopes 为空：仅从实现 file_path 推断（不依赖 doc_reference）
+    """
+    normalized: List[str] = []
+    for scope in list(scopes_list or []):
+        scope_text = str(scope or "").strip()
+        if scope_text:
+            normalized.append(scope_text)
+    if normalized:
+        return normalized
+    inferred_from_path = _infer_scopes_from_file_path(file_path)
+    if inferred_from_path:
+        return inferred_from_path
+    return []
 
 
 def normalize_specs(extracted_items: List[Union[ExtractedSpec, Dict[str, Any]]]) -> List[NormalizedSpec]:
@@ -89,6 +133,7 @@ def normalize_specs(extracted_items: List[Union[ExtractedSpec, Dict[str, Any]]])
             # 缺失关键信息时，保留到后续 validator 处理；此处仍然产出占位项以便统一流程
             category_standard = _ensure_category_with_suffix(category_text)
             standard_key = f"{category_standard}/{name_text}"
+            normalized_scopes = _normalize_scopes(scopes_list, file_path)
             normalized_list.append(NormalizedSpec(
                 file_path=file_path,
                 standard_key=standard_key,
@@ -97,7 +142,7 @@ def normalize_specs(extracted_items: List[Union[ExtractedSpec, Dict[str, Any]]])
                 input_types={},
                 output_types={},
                 aliases=aliases_list,
-                scopes=scopes_list,
+                scopes=normalized_scopes,
                 description=description_text,
                 mount_restrictions=mount_restrictions_list,
                 doc_reference=doc_reference_text,
@@ -116,6 +161,7 @@ def normalize_specs(extracted_items: List[Union[ExtractedSpec, Dict[str, Any]]])
 
         input_types = _pairs_to_type_dict(inputs_pairs)
         output_types = _pairs_to_type_dict(outputs_pairs)
+        normalized_scopes = _normalize_scopes(scopes_list, file_path)
 
         normalized_list.append(NormalizedSpec(
             file_path=file_path,
@@ -125,7 +171,7 @@ def normalize_specs(extracted_items: List[Union[ExtractedSpec, Dict[str, Any]]])
             input_types=input_types,
             output_types=output_types,
             aliases=aliases_list,
-            scopes=scopes_list,
+            scopes=normalized_scopes,
             description=description_text,
             mount_restrictions=mount_restrictions_list,
             doc_reference=doc_reference_text,

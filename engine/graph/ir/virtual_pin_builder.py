@@ -272,50 +272,6 @@ def _extract_bool_from_decorator(decorator: ast.Call, param_name: str, default: 
     return default
 
 
-def build_virtual_pins_from_signature(func_def: ast.FunctionDef) -> List[VirtualPinConfig]:
-    """从函数签名构建虚拟引脚列表
-    
-    解析复合节点函数的输入参数和返回值，生成虚拟引脚配置。
-    
-    Args:
-        func_def: 函数定义AST节点
-        
-    Returns:
-        虚拟引脚配置列表（输入+输出）
-    """
-    virtual_pins: List[VirtualPinConfig] = []
-    pin_index = 1
-    
-    # 解析输入参数（跳过第一个game参数）
-    for arg in func_def.args.args[1:]:
-        pin_name = arg.arg
-        pin_type = _get_type_annotation(arg.annotation)
-        # 流程输入识别：名称含"流程"或为"流程入"
-        is_flow = (pin_name == '流程入' or ('流程' in pin_name))
-        virtual_pins.append(VirtualPinConfig(
-            pin_index=pin_index,
-            pin_name=pin_name,
-            pin_type=pin_type,
-            is_input=True,
-            is_flow=is_flow,
-            description="",
-            mapped_ports=[]  # 稍后在映射阶段填充
-        ))
-        pin_index += 1
-    
-    # 解析返回值
-    if func_def.returns:
-        return_pins = _parse_return_annotation(func_def.returns)
-        for return_pin in return_pins:
-            return_pin.pin_index = pin_index
-            virtual_pins.append(return_pin)
-            pin_index += 1
-
-    # 函数格式复合节点也支持多个流程出口（通过返回值类型声明多个“流程”端口），
-    # 具体分支结构同样由 IR 构建层处理。
-    return virtual_pins
-
-
 def _get_type_annotation(annotation: Optional[ast.expr]) -> str:
     """获取类型标注对应的引脚类型（仅接受中文端口类型标记）
     
@@ -346,79 +302,6 @@ def _get_type_annotation(annotation: Optional[ast.expr]) -> str:
 
     # 其他复杂标注目前不参与类型推断，回退为泛型
     return "泛型"
-
-
-def _parse_return_annotation(returns: ast.expr) -> List[VirtualPinConfig]:
-    """解析返回类型标注
-    
-    Args:
-        returns: 返回类型标注AST节点
-        
-    Returns:
-        返回值虚拟引脚列表
-    """
-    pins = []
-    
-    if isinstance(returns, ast.Constant) and isinstance(returns.value, str):
-        # 单个返回值（字符串字面量形式，例如 -> "流程"）
-        type_str = returns.value.strip()
-        if type_str == 'None':
-            return []
-        
-        pin_type = _get_type_annotation(returns)
-        pins.append(VirtualPinConfig(
-            pin_index=0,  # 稍后设置
-            pin_name="返回值",
-            pin_type=pin_type,
-            is_input=False,
-            is_flow=(pin_type == "流程"),
-            description="",
-            mapped_ports=[]
-        ))
-    
-    elif isinstance(returns, ast.Name):
-        # 单个返回值（名称形式，例如 -> 流程）
-        if returns.id == 'None':
-            return []
-
-        # 复用输入类型解析逻辑（同样拒绝内置Python类型）
-        pin_type = _get_type_annotation(returns)
-        pins.append(VirtualPinConfig(
-            pin_index=0,  # 稍后设置
-            pin_name="返回值",
-            pin_type=pin_type,
-            is_input=False,
-            is_flow=(pin_type == "流程"),
-            description="",
-            mapped_ports=[]
-        ))
-    
-    elif isinstance(returns, ast.Subscript):
-        # Tuple[type1, type2, ...]
-        if isinstance(returns.value, ast.Name) and returns.value.id == 'Tuple':
-            if isinstance(returns.slice, ast.Tuple):
-                # 多个返回值
-                for i, elt in enumerate(returns.slice.elts):
-                    if isinstance(elt, ast.Name):
-                        # 支持中文类型名（拒绝内置Python类型名）
-                        pin_type = _get_type_annotation(elt)
-                    elif isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                        # 支持字符串字面量形式的类型标注
-                        pin_type = _get_type_annotation(elt)
-                    else:
-                        pin_type = "泛型"
-                    
-                    pins.append(VirtualPinConfig(
-                        pin_index=0,  # 稍后设置
-                        pin_name=f"返回值{i+1}",
-                        pin_type=pin_type,
-                        is_input=False,
-                        is_flow=(pin_type == "流程"),
-                        description="",
-                        mapped_ports=[]
-                    ))
-    
-    return pins
 
 
 def map_input_parameters_to_nodes(

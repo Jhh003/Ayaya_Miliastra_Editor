@@ -1,17 +1,8 @@
-# 节点图视图子模块
-# 将大型 graph_view.py 按职责拆分为多个子模块
+from __future__ import annotations
 
-# 从父级 ui 模块导入 GraphView（避免同名冲突）
-import sys
-import importlib.util
-from pathlib import Path
-
-# 使用 importlib 加载同名的 .py 文件
-_graph_view_file = Path(__file__).parent.parent / "graph_view.py"
-_spec = importlib.util.spec_from_file_location("_graph_view_module", _graph_view_file)
-_module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_module)
-GraphView = _module.GraphView
+# 节点图视图子模块：围绕 GraphView 将动画、叠层、导航等拆分到子模块。
+# 注意：不要使用 `spec_from_file_location` 动态加载 GraphView 实现，否则会产生重复模块/重复类对象。
+from app.ui.graph.graph_view_impl import GraphView
 
 # 导入子模块
 from app.ui.graph.graph_view.animation.view_transform_animation import ViewTransformAnimation

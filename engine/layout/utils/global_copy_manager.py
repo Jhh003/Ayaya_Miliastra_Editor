@@ -143,6 +143,9 @@ class GlobalCopyManager:
 
         # 逻辑数据依赖索引（canonical 视图）：dst_canonical -> {src_canonical,...}
         self._logical_upstream_by_data_dst: Dict[str, Set[str]] = {}
+        # 逻辑数据依赖索引（canonical 视图）：src_canonical -> {dst_canonical,...}
+        # 用于识别“仅由输出引脚消费”的纯数据尾部子图，并在块归属阶段做兜底挂载。
+        self._logical_downstream_by_data_src: Dict[str, Set[str]] = {}
         # 逻辑入边模板（用于为副本补齐输入）：dst_canonical -> {(src_id_or_canonical, src_port, dst_port, src_is_pure_data)}
         self._incoming_edge_templates_by_canonical_dst: Dict[str, Set[Tuple[str, str, str, bool]]] = {}
         self._build_logical_dependency_views()
@@ -193,6 +196,7 @@ class GlobalCopyManager:
     def _build_logical_dependency_views(self) -> None:
         """构建 canonical 视图的依赖与入边模板，兼容图中已存在副本与已重定向边。"""
         upstream_by_dst: Dict[str, Set[str]] = {}
+        downstream_by_src: Dict[str, Set[str]] = {}
         templates_by_dst: Dict[str, Set[Tuple[str, str, str, bool]]] = {}
 
         for edge in sorted(self.model.edges.values(), key=lambda item: getattr(item, "id", "")):
@@ -228,8 +232,10 @@ class GlobalCopyManager:
             if not src_canonical:
                 continue
             upstream_by_dst.setdefault(dst_canonical, set()).add(src_canonical)
+            downstream_by_src.setdefault(src_canonical, set()).add(dst_canonical)
 
         self._logical_upstream_by_data_dst = upstream_by_dst
+        self._logical_downstream_by_data_src = downstream_by_src
         self._incoming_edge_templates_by_canonical_dst = templates_by_dst
 
     def _is_pure_data_node(self, node_id: str) -> bool:
@@ -309,6 +315,244 @@ class GlobalCopyManager:
                 for upstream_canonical in sorted(upstream_candidates):
                     if upstream_canonical and upstream_canonical not in visited:
                         traversal_queue.append(upstream_canonical)
+
+        # 兜底：将“仅由输出引脚消费/未被任何流程节点直接消费”的纯数据尾部子图挂载到合适的块上，
+        # 避免这些节点在阶段2未被放置，从而在 UI 中显示为“不属于任何块”。
+        self._attach_unassigned_output_data_subgraphs()
+
+    def _attach_unassigned_output_data_subgraphs(self) -> None:
+        """
+        处理一种常见布局缺口：
+        - 某些纯数据节点只参与最终输出组装（例如 `拼装字典`），不作为任何流程节点的输入；
+        - 全局依赖分析仅以“流程节点输入”作为种子会遗漏这段尾部纯数据链；
+        - 结果是这些节点不会出现在任何块的 block_data_nodes 中，阶段2不会放置它们。
+
+        修复策略（确定性、最小侵入）：
+        - 找到当前未被任何块 full_data_closure 覆盖的“纯数据 sink”（没有任何数据输出边，但有数据输入边）；
+        - 对每个 sink，沿纯数据上游追溯，收集仍未归属的尾部子图；
+        - 将该尾部子图挂到“依赖它的已归属数据节点所在的最靠后块”（最大 block_index）上；
+          若无法推断，则挂到图内最后一个块上。
+        """
+        if not self.block_dependencies:
+            return
+
+        # 已归属的数据 canonical 集合
+        assigned: Set[str] = set()
+        canonical_to_max_block_index: Dict[str, int] = {}
+        max_block_index = 0
+        for block_id, dependency in self.block_dependencies.items():
+            max_block_index = max(max_block_index, int(dependency.block_index))
+            for canonical_id in dependency.full_data_closure:
+                if not canonical_id:
+                    continue
+                assigned.add(canonical_id)
+                existing = canonical_to_max_block_index.get(canonical_id, 0)
+                if int(dependency.block_index) > existing:
+                    canonical_to_max_block_index[canonical_id] = int(dependency.block_index)
+
+        # 扫描数据边，统计 canonical 级别的入/出度（仅纯数据节点）。
+        outgoing_canonicals: Set[str] = set()
+        incoming_canonicals: Set[str] = set()
+        for edge in sorted(self.model.edges.values(), key=lambda item: getattr(item, "id", "")):
+            if not is_data_edge(self.model, edge):
+                continue
+            src_id = getattr(edge, "src_node", "") or ""
+            dst_id = getattr(edge, "dst_node", "") or ""
+            if not src_id or not dst_id:
+                continue
+            if self._is_pure_data_node(src_id):
+                src_canonical = self._resolve_canonical_original_id(src_id)
+                if src_canonical:
+                    outgoing_canonicals.add(src_canonical)
+            if self._is_pure_data_node(dst_id):
+                dst_canonical = self._resolve_canonical_original_id(dst_id)
+                if dst_canonical:
+                    incoming_canonicals.add(dst_canonical)
+
+        # 找到“未归属 + 有入边 + 无出边”的纯数据 canonical sink
+        unassigned_sinks: List[str] = []
+        for node_id, node_obj in self.model.nodes.items():
+            if not self._is_pure_data_node(str(node_id)):
+                continue
+            canonical_id = self._resolve_canonical_original_id(str(node_id))
+            if not canonical_id:
+                continue
+            # 只处理原始节点（canonical 必须在 nodes 内）；副本由 copy_block_id 归属处理。
+            if canonical_id not in self.model.nodes:
+                continue
+            if canonical_id in assigned:
+                continue
+            if canonical_id not in incoming_canonicals:
+                continue
+            if canonical_id in outgoing_canonicals:
+                continue
+            if canonical_id not in unassigned_sinks:
+                unassigned_sinks.append(canonical_id)
+        unassigned_sinks.sort()
+
+        if not unassigned_sinks:
+            return
+
+        newly_assigned: Set[str] = set()
+        block_to_column_index: Dict[str, int] = {}
+
+        # 预计算“块 → 列索引”（与块间排版一致），用于判定 UI 视角下的“最右侧块”。
+        # 注意：order_index 只是稳定编号，不等同于横向列位置。
+        from ..blocks.block_relationship_analyzer import BlockRelationshipAnalyzer
+        from ..blocks.block_positioning_engine import BlockPositioningEngine
+
+        flow_to_block_map: Dict[str, object] = {}
+        for layout_block in self.layout_blocks:
+            for flow_node_id in getattr(layout_block, "flow_nodes", None) or []:
+                flow_to_block_map[str(flow_node_id)] = layout_block
+
+        analyzer = BlockRelationshipAnalyzer(self.model, self.layout_blocks)
+        ordered_children = analyzer.analyze_relationships()
+        parent_sets = analyzer.parent_map
+
+        # 这里不需要真实像素 X，只需要列索引；spacing/initial 不影响列计算。
+        engine = BlockPositioningEngine(
+            self.model,
+            self.layout_blocks,
+            flow_to_block_map,  # type: ignore[arg-type]
+            initial_x=0.0,
+            initial_y=0.0,
+            block_x_spacing=1.0,
+            block_y_spacing=1.0,
+            parents_map=parent_sets,
+        )
+        column_map = engine.compute_column_indices(set(self.layout_blocks), ordered_children, parent_sets=parent_sets)
+        for block_obj, col in (column_map or {}).items():
+            block_id = f"block_{int(getattr(block_obj, 'order_index', 0) or 0)}"
+            block_to_column_index[block_id] = int(col)
+
+        def _parse_block_index_from_block_id(block_id: str) -> int:
+            if not isinstance(block_id, str) or not block_id.startswith("block_"):
+                return 0
+            suffix = block_id.split("_", 1)[-1]
+            return int(suffix) if suffix.isdigit() else 0
+
+        def _infer_connected_block_id(node_instance_id: str) -> str:
+            """
+            将一个“连接在边界上的节点实例”解析为其所属块ID（block_*）。
+            支持流程节点 / 数据节点 / 数据副本；若无法解析，返回空字符串。
+            """
+            if not isinstance(node_instance_id, str) or not node_instance_id:
+                return ""
+
+            flow_block_id = self._flow_to_block.get(node_instance_id, "")
+            if flow_block_id:
+                return str(flow_block_id)
+
+            node_obj = self.model.nodes.get(node_instance_id)
+            if node_obj is None:
+                return ""
+
+            if is_data_node_copy(node_obj):
+                copy_block = resolve_copy_block_id(node_obj)
+                return str(copy_block)
+
+            if self._is_pure_data_node(node_instance_id):
+                canonical = self._resolve_canonical_original_id(node_instance_id)
+                owner_index = int(canonical_to_max_block_index.get(canonical, 0))
+                if owner_index > 0:
+                    return f"block_{owner_index}"
+                return ""
+
+            return ""
+
+        def _block_column(block_id: str) -> int:
+            """将 block_id 映射为列索引（越大越靠右）；无映射时回退到块序号。"""
+            if not block_id:
+                return 0
+            if block_id in block_to_column_index:
+                return int(block_to_column_index[block_id])
+            return _parse_block_index_from_block_id(block_id)
+
+        def _resolve_target_block_for_tail(tail_node_ids: Set[str]) -> str:
+            """
+            目标块选择规则（避免回头线）：
+            - 对整段尾部纯数据链（tail_node_ids），收集其与外部相连的“边界节点”（入边来源/出边去向）；
+            - 取这些边界节点所在块的最大 block_index；
+            - 若无法解析任何边界块，则回退到最后一个块。
+
+            这样可以覆盖用户期望的情况：
+            - 某个尾部节点（如 拼装列表）被块7内节点消费 → tail 挂到块7；
+            - 多个块都连接 tail → tail 挂到最右侧那个块，避免回头线。
+            """
+            best_block_id = ""
+            best_column = -1
+            if not tail_node_ids:
+                return f"block_{int(max_block_index)}"
+
+            # 入边边界：外部 -> tail
+            for tail_id in sorted(tail_node_ids):
+                incoming_edges = self._data_in_edges_by_dst.get(tail_id, []) or []
+                for edge in incoming_edges:
+                    src_id = getattr(edge, "src_node", "") or ""
+                    if not isinstance(src_id, str) or not src_id:
+                        continue
+                    if src_id in tail_node_ids:
+                        continue
+                    src_block_id = _infer_connected_block_id(src_id)
+                    src_column = _block_column(src_block_id)
+                    if src_column > best_column:
+                        best_block_id = src_block_id
+                        best_column = src_column
+
+            # 出边边界：tail -> 外部
+            for tail_id in sorted(tail_node_ids):
+                outgoing_edges = self._data_out_edges_by_src.get(tail_id, []) or []
+                for edge in outgoing_edges:
+                    dst_id = getattr(edge, "dst_node", "") or ""
+                    if not isinstance(dst_id, str) or not dst_id:
+                        continue
+                    if dst_id in tail_node_ids:
+                        continue
+                    dst_block_id = _infer_connected_block_id(dst_id)
+                    dst_column = _block_column(dst_block_id)
+                    if dst_column > best_column:
+                        best_block_id = dst_block_id
+                        best_column = dst_column
+
+            if best_block_id:
+                return str(best_block_id)
+            return f"block_{int(max_block_index)}"
+
+        for sink_canonical in unassigned_sinks:
+            if sink_canonical in newly_assigned or sink_canonical in assigned:
+                continue
+
+            # 收集该 sink 的“尾部子图”：沿纯数据上游追溯，遇到已归属节点即停止扩展。
+            # 说明：此处只挂载“尚未归属任何块”的那一段尾部纯数据链，
+            # 避免把整张图的上游依赖强行纳入同一块导致复制膨胀。
+            tail_queue: deque[str] = deque([sink_canonical])
+            tail_visited: Set[str] = set()
+            tail_to_attach: Set[str] = set()
+            while tail_queue:
+                current = tail_queue.popleft()
+                if not current or current in tail_visited:
+                    continue
+                tail_visited.add(current)
+                if current in assigned:
+                    continue
+                tail_to_attach.add(current)
+                for upstream in sorted(self._logical_upstream_by_data_dst.get(current, set())):
+                    if upstream and upstream not in tail_visited:
+                        tail_queue.append(upstream)
+
+            if not tail_to_attach:
+                continue
+
+            target_block_id = _resolve_target_block_for_tail(tail_to_attach)
+            dependency = self.block_dependencies.get(target_block_id)
+            if dependency is None:
+                continue
+
+            for canonical_id in sorted(tail_to_attach):
+                dependency.full_data_closure.add(canonical_id)
+                newly_assigned.add(canonical_id)
+                assigned.add(canonical_id)
     
     def _identify_shared_nodes(self) -> None:
         """识别被多个块使用的数据节点"""

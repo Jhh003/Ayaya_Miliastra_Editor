@@ -37,7 +37,7 @@ class ExecutableCodegenOptions:
     import_mode: str = "local_prelude"
     """导入模式：
     - local_prelude：生成 `from _prelude import *`，由同目录的 `_prelude.py` 负责注入 sys.path 与 runtime/节点占位类型
-    - workspace_bootstrap：在生成文件内注入 sys.path（project_root/app/assets），再导入 `runtime.engine.graph_prelude_*`
+    - workspace_bootstrap：在生成文件内注入 sys.path（project_root/assets；不要注入 app），再导入 `runtime.engine.graph_prelude_*`
     """
 
     enable_auto_validate: bool = True
@@ -135,7 +135,7 @@ class ExecutableCodeGenerator:
             options.prelude_module_client if graph_type == "client" else options.prelude_module_server
         )
 
-        lines.append("# 让该文件可在任意工作目录下直接运行：注入 project_root/app/assets 到 sys.path")
+        lines.append("# 让该文件可在任意工作目录下直接运行：注入 project_root/assets 到 sys.path（不要注入 app 目录）")
         lines.append("import sys")
         lines.append("from pathlib import Path")
         lines.append("")
@@ -146,14 +146,11 @@ class ExecutableCodeGenerator:
         lines.append("    if (PROJECT_ROOT / 'engine').exists() and (PROJECT_ROOT / 'app').exists():")
         lines.append("        break")
         lines.append("    PROJECT_ROOT = PROJECT_ROOT.parent")
-        lines.append("APP_DIR = PROJECT_ROOT / 'app'")
         lines.append("ASSETS_ROOT = PROJECT_ROOT / 'assets'")
-        lines.append("if str(APP_DIR) not in sys.path:")
-        lines.append("    sys.path.insert(0, str(APP_DIR))")
         lines.append("if str(PROJECT_ROOT) not in sys.path:")
-        lines.append("    sys.path.insert(1, str(PROJECT_ROOT))")
+        lines.append("    sys.path.insert(0, str(PROJECT_ROOT))")
         lines.append("if str(ASSETS_ROOT) not in sys.path:")
-        lines.append("    sys.path.insert(2, str(ASSETS_ROOT))")
+        lines.append("    sys.path.insert(1, str(ASSETS_ROOT))")
         lines.append("")
         lines.append(f"from {prelude_module} import *  # noqa: F401,F403")
         lines.append(f"from {prelude_module} import GameRuntime")

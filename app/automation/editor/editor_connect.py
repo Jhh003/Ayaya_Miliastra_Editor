@@ -81,7 +81,7 @@ def execute_add_variadic_inputs(
     """为节点添加变参输入端口。
 
     这里作为应用层入口：
-    - 由 core 层负责注入端口识别函数 list_ports_for_bbox；
+    - 由上层负责注入端口识别函数 list_ports_for_bbox；
     - 具体的几何与变参逻辑由 app.automation.ports.variadic_ports 实现。
     """
     return variadic_ports.execute_add_variadic_inputs(

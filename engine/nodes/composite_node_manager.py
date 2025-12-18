@@ -1,4 +1,8 @@
-"""复合节点管理器 - 管理全局复合节点库（函数格式）"""
+"""复合节点管理器 - 管理复合节点库（类格式）
+
+注意：本管理器用于“编辑/运行期”的复合节点增删改查与懒加载，不参与 NodeRegistry 的节点库构建。
+为避免循环依赖与“随机缺节点”，本模块的全局工厂不得隐式调用 get_node_registry().get_library()。
+"""
 
 from __future__ import annotations
 from pathlib import Path
@@ -6,10 +10,11 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 
 from engine.nodes.advanced_node_features import CompositeNodeConfig, VirtualPinConfig, MappedPort
 from engine.nodes.node_definition_loader import NodeDef
+from engine.nodes.composite_file_policy import discover_composite_definition_files
 from engine.nodes.composite_node_loader import CompositeNodeLoader
 from engine.nodes.composite_folder_manager import CompositeFolderManager
 from engine.nodes.composite_virtual_pin_manager import CompositeVirtualPinManager
-from engine.nodes.node_registry import get_node_registry
+from engine.nodes.impl_definition_loader import load_all_nodes_from_impl
 from engine.utils.logging.logger import log_info, log_warn, log_error
 
 if TYPE_CHECKING:
@@ -21,7 +26,7 @@ if TYPE_CHECKING:
 class CompositeNodeManager:
     """复合节点管理器 - 负责复合节点的增删改查和持久化
     
-    使用离散化存储：每个复合节点一个 .py 文件（函数代码格式）
+    使用离散化存储：每个复合节点一个 .py 文件（类格式，含 JSON payload，供可视化编辑闭环使用）
     """
     
     def __init__(
@@ -101,24 +106,23 @@ class CompositeNodeManager:
         return self._graph_reference_tracker
     
     def _load_library(self) -> None:
-        """从文件加载复合节点库（函数代码格式）"""
-        # 扫描所有 .py 文件（包括子文件夹）
-        py_files = list(self.composite_library_dir.glob("**/*.py"))
+        """从文件加载复合节点库（类格式）"""
+        # 扫描复合节点定义文件（统一规则：assets/资源库/复合节点库/**/composite_*.py）
+        py_files = discover_composite_definition_files(self.workspace_path)
         
         # 扫描并收集所有文件夹
         self.folder_manager.scan_folders()
         
         # 加载复合节点
         for py_file in py_files:
-            if py_file.name.startswith("composite_") and py_file.suffix == ".py":
-                composite = self.loader.load_composite_from_file(py_file, load_subgraph=False)
-                if composite:
-                    errors = self.validate_composite_node(composite)
-                    if errors:
-                        error_text = "\n".join(str(err) for err in errors)
-                        raise ValueError(f"复合节点定义非法: file={py_file}\n{error_text}")
-                    self.composite_nodes[composite.composite_id] = composite
-                    self.composite_index[composite.composite_id] = py_file
+            composite = self.loader.load_composite_from_file(py_file, load_subgraph=False)
+            if composite:
+                errors = self.validate_composite_node(composite)
+                if errors:
+                    error_text = "\n".join(str(err) for err in errors)
+                    raise ValueError(f"复合节点定义非法: file={py_file}\n{error_text}")
+                self.composite_nodes[composite.composite_id] = composite
+                self.composite_index[composite.composite_id] = py_file
         
         if self.verbose:
             log_info(f"加载了 {len(self.composite_nodes)} 个复合节点，{len(self.folder_manager.folders)} 个文件夹")
@@ -176,12 +180,32 @@ class CompositeNodeManager:
         composite_id = f"composite_{sanitized_name}"
         
         # 创建配置
+        if not virtual_pins:
+            # 默认至少提供一个流程入口与一个流程出口，避免创建出“不可用/无法通过校验”的空壳复合节点
+            virtual_pins = [
+                VirtualPinConfig(
+                    pin_index=1,
+                    pin_name="流程入",
+                    pin_type="流程",
+                    is_input=True,
+                    is_flow=True,
+                    description="",
+                ),
+                VirtualPinConfig(
+                    pin_index=2,
+                    pin_name="流程出",
+                    pin_type="流程",
+                    is_input=False,
+                    is_flow=True,
+                    description="",
+                ),
+            ]
         composite = CompositeNodeConfig(
             composite_id=composite_id,
             node_name=node_name,
             node_description=node_description,
             scope="server",  # 固定为server
-            virtual_pins=virtual_pins or [],
+            virtual_pins=virtual_pins,
             sub_graph=sub_graph or {"nodes": [], "edges": [], "graph_variables": []},
             folder_path=folder_path
         )
@@ -189,7 +213,7 @@ class CompositeNodeManager:
         # 添加到库中
         self.composite_nodes[composite_id] = composite
         
-        # 保存为函数代码文件
+        # 保存为类格式代码文件（含 JSON payload）
         file_path = self.loader.save_composite_to_file(composite)
         self.composite_index[composite_id] = file_path
         
@@ -687,12 +711,12 @@ class CompositeNodeManager:
         )
 
 
-# 全局实例（延迟初始化）
-_global_manager: Optional[CompositeNodeManager] = None
+# 全局实例缓存（按工作区隔离）
+_global_managers_by_workspace: Dict[Path, CompositeNodeManager] = {}
 
 
 def get_composite_node_manager(
-    workspace_path: Path = None,
+    workspace_path: Optional[Path] = None,
     verbose: bool = False,
     base_node_library: Optional[Dict[str, NodeDef]] = None,
     composite_code_generator: Optional[object] = None,
@@ -707,30 +731,48 @@ def get_composite_node_manager(
     Returns:
         复合节点管理器实例
     """
-    global _global_manager
+    if workspace_path is None:
+        # 兼容调用方：当全局缓存中仅存在一个工作区实例时，允许省略 workspace_path。
+        # 典型场景：UI 已在进入复合节点模式时创建过 manager，后续预览组件仅需要读取编号/配置。
+        if len(_global_managers_by_workspace) == 1:
+            existing = next(iter(_global_managers_by_workspace.values()))
+            if composite_code_generator is not None:
+                existing.loader.set_code_generator(composite_code_generator)
+            return existing
+        if len(_global_managers_by_workspace) == 0:
+            raise ValueError("workspace_path 不能为空（首次创建 CompositeNodeManager 必须显式传入）")
+        raise ValueError(
+            "workspace_path 不能为空（已存在多个工作区 CompositeNodeManager，请显式传入 workspace_path）"
+        )
 
-    if _global_manager is None:
-        if workspace_path is None:
-            raise ValueError("首次调用需要提供workspace_path")
-        # 若未显式注入基础节点库，则优先复用集中式节点注册表中的节点定义，避免重复跑节点实现管线
+    resolved_workspace = workspace_path.resolve()
+    existing = _global_managers_by_workspace.get(resolved_workspace)
+
+    if existing is None:
+        # 若未显式注入基础节点库：使用实现侧管线产物构建（不触发 NodeRegistry）
+        # 目的：避免在复合节点管理器初始化阶段反向调用 get_node_registry().get_library() 造成循环依赖。
         if base_node_library is None:
-            registry = get_node_registry(workspace_path, include_composite=True)
-            base_node_library = registry.get_library()
-        _global_manager = CompositeNodeManager(
-            workspace_path,
+            base_node_library = load_all_nodes_from_impl(
+                resolved_workspace,
+                include_composite=False,
+                verbose=verbose,
+            )
+
+        manager = CompositeNodeManager(
+            resolved_workspace,
             verbose=verbose,
             base_node_library=base_node_library,
             composite_code_generator=composite_code_generator,
         )
-    else:
-        if composite_code_generator is not None:
-            _global_manager.loader.set_code_generator(composite_code_generator)
+        _global_managers_by_workspace[resolved_workspace] = manager
+        return manager
 
-    return _global_manager
+    if composite_code_generator is not None:
+        existing.loader.set_code_generator(composite_code_generator)
+    return existing
 
 
 def clear_global_composite_node_manager_for_tests() -> None:
-    """仅供测试环境使用：清空全局 CompositeNodeManager 单例，避免跨用例状态污染。"""
-    global _global_manager
-    _global_manager = None
+    """仅供测试环境使用：清空全局 CompositeNodeManager 缓存，避免跨用例状态污染。"""
+    _global_managers_by_workspace.clear()
 

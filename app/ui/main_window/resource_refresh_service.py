@@ -10,12 +10,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.common.in_memory_graph_payload_cache import clear_all_graph_data
 from engine.layout import invalidate_layout_caches
 from engine.resources.definition_schema_view import (
     invalidate_default_signal_cache,
     invalidate_default_struct_cache,
 )
+from engine.resources.ingame_save_template_schema_view import (
+    invalidate_default_ingame_save_template_cache,
+)
+from engine.resources.level_variable_schema_view import (
+    invalidate_default_level_variable_cache,
+)
+from engine.signal import invalidate_default_signal_repository_cache
 from app.runtime.services.graph_data_service import get_shared_graph_data_service
 
 from .app_state import MainWindowAppState
@@ -38,12 +44,21 @@ class ResourceRefreshService:
         *,
         app_state: MainWindowAppState,
         package_controller: Any,
+        graph_controller: Any,
         global_resource_view: Any | None,
     ) -> ResourceRefreshOutcome:
         """执行缓存失效与资源索引重建，并返回结果摘要。"""
-        # 0) 代码级 Schema 缓存失效
+        provider = get_shared_graph_data_service(
+            app_state.resource_manager,
+            app_state.package_index_manager,
+        )
+
+        # 0) 代码级 Schema / Repository 缓存失效（避免刷新后仍读到旧代码资源）
         invalidate_default_struct_cache()
         invalidate_default_signal_cache()
+        invalidate_default_level_variable_cache()
+        invalidate_default_ingame_save_template_cache()
+        invalidate_default_signal_repository_cache()
 
         # 同步失效管理页面内基于 ResourceManager 的结构体记录快照
         #（避免“基础结构体定义/局内存档结构体定义”仍展示旧记录）
@@ -55,17 +70,14 @@ class ResourceRefreshService:
 
         # 1) 统一清理运行期缓存（内存 + 磁盘），缩短“刷新需要手动清一串缓存”的链路
         app_state.resource_manager.clear_all_caches()
-        clear_all_graph_data()
-        invalidate_layout_caches(app_state.graph_model)
+        provider.clear_all_payload_graph_data()
+        current_model = graph_controller.get_current_model()
+        invalidate_layout_caches(current_model)
 
         # 2) 重建资源索引并刷新指纹基线
         app_state.resource_manager.rebuild_index()
 
         # 3) 失效图属性面板/引用查询等共享数据提供器缓存（避免仍展示旧图数据/旧引用列表）
-        provider = get_shared_graph_data_service(
-            app_state.resource_manager,
-            app_state.package_index_manager,
-        )
         provider.invalidate_graph()
         provider.invalidate_package_cache()
 

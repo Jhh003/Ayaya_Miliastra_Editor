@@ -16,10 +16,17 @@ from app.models.todo_graph_tasks.edge_lookup import GraphEdgeLookup
 from app.models.todo_node_type_helper import NodeTypeHelper
 from app.models.todo_structure_helpers import ensure_child_reference
 from engine.graph.common import (
+    SIGNAL_ID_HINT_CONSTANT_KEY,
+    SIGNAL_NAME_PORT_NAME,
     SIGNAL_SEND_NODE_TITLE,
     SIGNAL_LISTEN_NODE_TITLE,
+    STRUCT_ID_HINT_CONSTANT_KEY,
     STRUCT_NAME_PORT_NAME,
 )
+
+# 兼容旧数据：历史上曾用单下划线存储稳定 ID（UI 不应引导用户配置这些内部键）
+_LEGACY_SIGNAL_ID_CONSTANT_KEY: str = "_signal_id"
+_LEGACY_STRUCT_ID_CONSTANT_KEY: str = "_struct_id"
 
 
 class DynamicPortStepPlanner:
@@ -126,16 +133,36 @@ class DynamicPortStepPlanner:
             return []
         node_title = str(getattr(node_obj, "title", "") or "")
 
+        def should_skip_constant_key(constant_key: object) -> bool:
+            """过滤不应暴露给任务清单的“内部常量键”。
+
+            说明：
+            - `__signal_id/__struct_id` 这类隐藏键属于语义推导的稳定 ID，不对应真实端口；
+            - 旧数据里可能残留 `_signal_id/_struct_id`，同样不应作为“配置参数”引导用户填写；
+            - 信号/结构体的“选择端口”（信号名/结构体名）由专门的绑定步骤负责，避免重复生成配置项。
+            """
+            if constant_key is None:
+                return True
+            key_text = str(constant_key)
+            if not key_text:
+                return True
+            if key_text in {
+                SIGNAL_ID_HINT_CONSTANT_KEY,
+                STRUCT_ID_HINT_CONSTANT_KEY,
+                _LEGACY_SIGNAL_ID_CONSTANT_KEY,
+                _LEGACY_STRUCT_ID_CONSTANT_KEY,
+            }:
+                return True
+            if node_title in (SIGNAL_SEND_NODE_TITLE, SIGNAL_LISTEN_NODE_TITLE) and key_text == SIGNAL_NAME_PORT_NAME:
+                return True
+            if key_text == STRUCT_NAME_PORT_NAME:
+                return True
+            return False
+
         if self._edge_lookup is None:
             payload: List[Dict[str, Any]] = []
             for constant_name, constant_value in constants.items():
-                name_text = str(constant_name)
-                # 信号发送节点的“信号名”端口由专门的信号绑定步骤处理，这里不再生成重复的配置参数步骤。
-                if node_title == SIGNAL_SEND_NODE_TITLE and name_text == "信号名":
-                    continue
-                # 结构体相关节点的“结构体名”端口同样由独立的结构体绑定步骤处理，
-                # 在通用参数步骤中不再重复生成“配置结构体名”这一项。
-                if name_text == STRUCT_NAME_PORT_NAME:
+                if should_skip_constant_key(constant_name):
                     continue
                 if self._should_skip_constant_param(constant_value):
                     continue
@@ -150,15 +177,11 @@ class DynamicPortStepPlanner:
         result: List[Dict[str, Any]] = []
         node_id = getattr(node_obj, "id", "")
         for key, value in constants.items():
-            port_name = str(key)
-            # 同样地，信号发送节点的“信号名”端口不参与通用参数配置步骤。
-            if node_title == SIGNAL_SEND_NODE_TITLE and port_name == "信号名":
-                continue
-            # 结构体节点的“结构体名”端口由结构体绑定步骤负责，这里跳过。
-            if port_name == STRUCT_NAME_PORT_NAME:
+            if should_skip_constant_key(key):
                 continue
             if self._should_skip_constant_param(value):
                 continue
+            port_name = str(key)
             edges_for_input = self._edge_lookup.input_edges_map.get((node_id, port_name), [])
             has_data_edge = False
             if edges_for_input:

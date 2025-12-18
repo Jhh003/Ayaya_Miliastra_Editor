@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from app.common.in_memory_graph_payload_cache import resolve_graph_data
 from app.models import TodoItem
 from engine.configs.settings import settings
 from app.ui.todo.todo_config import StepTypeRules
-from app.runtime.services.graph_data_service import get_shared_graph_data_service
+from app.runtime.services.graph_data_service import GraphDataService
 
 
 def resolve_graph_preview_context(
@@ -14,7 +13,8 @@ def resolve_graph_preview_context(
     todo_map: Dict[str, TodoItem],
     *,
     tree_manager: Any = None,
-    main_window: Any = None,
+    graph_data_service: GraphDataService,
+    current_package: object | None,
 ) -> Tuple[Optional[dict], Optional[str], Optional[object]]:
     """解析给定 Todo 所属图的 graph_data / graph_id 以及预览容器对象。
 
@@ -35,9 +35,7 @@ def resolve_graph_preview_context(
         if StepTypeRules.is_graph_root(detail_type):
             root_todo_for_tree = todo
         else:
-            find_root = getattr(tree_manager, "find_template_graph_root_for_todo", None)
-            if callable(find_root):
-                root_todo_for_tree = find_root(todo.todo_id)
+            root_todo_for_tree = tree_manager.find_template_graph_root_for_todo(todo.todo_id)
 
         if root_todo_for_tree is not None:
             root_info = root_todo_for_tree.detail_info or {}
@@ -45,36 +43,29 @@ def resolve_graph_preview_context(
             if isinstance(graph_id_candidate, str) and graph_id_candidate:
                 graph_id = graph_id_candidate
 
-            load_graph_data_for_root = getattr(tree_manager, "load_graph_data_for_root", None)
-            if callable(load_graph_data_for_root):
-                loaded = load_graph_data_for_root(root_todo_for_tree)
-                if isinstance(loaded, dict) and ("nodes" in loaded or "edges" in loaded):
-                    graph_data = loaded
+            loaded = tree_manager.load_graph_data_for_root(root_todo_for_tree)
+            if isinstance(loaded, dict) and ("nodes" in loaded or "edges" in loaded):
+                graph_data = loaded
 
     # 回退：从 detail_info 的 graph_data_key（或内存缓存 key）解析
     if graph_id is None:
         graph_id = _resolve_graph_id(todo, todo_map)
     if graph_data is None:
-        graph_data = _resolve_graph_data(todo, todo_map, main_window=main_window)
+        graph_data = _resolve_graph_data(todo, todo_map, graph_data_service=graph_data_service)
 
-    container_obj = _resolve_template_or_instance(todo, todo_map, main_window)
+    container_obj = _resolve_template_or_instance(todo, todo_map, current_package=current_package)
     return (graph_data, graph_id, container_obj)
 
 
-def _resolve_graph_data(todo: TodoItem, todo_map: Dict[str, TodoItem], *, main_window: Any) -> Optional[dict]:
-    graph_data_service = None
-    if main_window is not None:
-        resource_manager = getattr(main_window, "resource_manager", None)
-        package_index_manager = getattr(main_window, "package_index_manager", None)
-        graph_data_service = get_shared_graph_data_service(resource_manager, package_index_manager)
-
+def _resolve_graph_data(
+    todo: TodoItem,
+    todo_map: Dict[str, TodoItem],
+    *,
+    graph_data_service: GraphDataService,
+) -> Optional[dict]:
     # 当前任务
     current_info = todo.detail_info or {}
-    data = (
-        graph_data_service.resolve_payload_graph_data(current_info)
-        if graph_data_service is not None
-        else resolve_graph_data(current_info)
-    )
+    data = graph_data_service.resolve_payload_graph_data(current_info)
     if isinstance(data, dict) and ("nodes" in data or "edges" in data):
         if settings.PREVIEW_VERBOSE:
             print("[PREVIEW] graph_data 来自当前任务(detail_info)")
@@ -90,11 +81,7 @@ def _resolve_graph_data(todo: TodoItem, todo_map: Dict[str, TodoItem], *, main_w
         detail_type = (current.detail_info or {}).get("type")
         if StepTypeRules.is_template_graph_root(detail_type):
             info = current.detail_info or {}
-            data = (
-                graph_data_service.resolve_payload_graph_data(info)
-                if graph_data_service is not None
-                else resolve_graph_data(info)
-            )
+            data = graph_data_service.resolve_payload_graph_data(info)
             if isinstance(data, dict) and ("nodes" in data or "edges" in data):
                 if settings.PREVIEW_VERBOSE:
                     print(f"[PREVIEW] graph_data 来自父任务(模板图根): {detail_type}")
@@ -139,14 +126,9 @@ def _resolve_graph_id(todo: TodoItem, todo_map: Dict[str, TodoItem]) -> Optional
 def _resolve_template_or_instance(
     todo: TodoItem,
     todo_map: Dict[str, TodoItem],
-    main_window: Any,
+    *,
+    current_package: object | None,
 ) -> Optional[object]:
-    if not main_window or not hasattr(main_window, "package_controller"):
-        if settings.PREVIEW_VERBOSE:
-            print("[PREVIEW] 无 main_window.package_controller，预览上下文不可用")
-        return None
-
-    current_package = main_window.package_controller.current_package
     if not current_package:
         if settings.PREVIEW_VERBOSE:
             print("[PREVIEW] 当前没有加载存档，预览上下文不可用")

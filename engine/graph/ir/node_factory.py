@@ -19,10 +19,8 @@ class FactoryContext:
     node_library: Dict[str, NodeDef]
     node_name_index: Dict[str, str]
     verbose: bool = False
-    # 结构体/信号等语义推导所需的“只读索引”，由上层编排器按需填充。
-    struct_name_to_id: Optional[Dict[str, str]] = None
-    struct_fields_by_id: Optional[Dict[str, List[str]]] = None
-    signal_repo: Optional[Any] = None  # SignalRepository-like
+    # 注意：语义元数据（signal_bindings/struct_bindings）不在 IR 层写入，
+    # 统一由 `engine.graph.semantic.GraphSemanticPass` 在更高层的明确阶段生成。
 
 
 def create_event_node(event_name: str, method: ast.FunctionDef, ctx: FactoryContext) -> NodeModel:

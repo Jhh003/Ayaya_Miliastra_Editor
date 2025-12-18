@@ -130,6 +130,10 @@ class IngameSaveTemplateSchemaView:
         self.get_all_templates()
         return self._schema_service.get_template_file_path(template_id)
 
+    def invalidate_cache(self) -> None:
+        """使缓存失效，下次访问时重新加载。"""
+        self._templates = None
+
 
 _default_ingame_save_template_schema_view: IngameSaveTemplateSchemaView | None = None
 
@@ -140,6 +144,14 @@ def get_default_ingame_save_template_schema_view() -> IngameSaveTemplateSchemaVi
     if _default_ingame_save_template_schema_view is None:
         _default_ingame_save_template_schema_view = IngameSaveTemplateSchemaView()
     return _default_ingame_save_template_schema_view
+
+
+def invalidate_default_ingame_save_template_cache() -> None:
+    """使默认视图的缓存失效。"""
+    global _default_ingame_save_template_schema_view
+    if _default_ingame_save_template_schema_view is not None:
+        _default_ingame_save_template_schema_view.invalidate_cache()
+
 
 def update_default_template_id(default_template_id: str | None) -> None:
     """根据给定模板 ID 更新各局内存档模板中的 is_default_template 状态。
@@ -185,4 +197,7 @@ def update_default_template_id(default_template_id: str | None) -> None:
         ]
         source_text = "\n".join(source_lines)
         file_path.write_text(source_text, encoding="utf-8")
+
+    # 文件已写回：使 schema view 缓存失效，避免后续仍读取旧模板状态。
+    schema_view.invalidate_cache()
 

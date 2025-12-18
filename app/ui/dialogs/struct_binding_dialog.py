@@ -135,10 +135,14 @@ class StructBindingDialog(BaseDialog):
     # 数据填充与选择恢复
     # ------------------------------------------------------------------
 
-    def _extract_struct_summary(self, struct_id: str, struct_data: Mapping[str, object]) -> Tuple[str, str]:
+    def _extract_struct_summary(
+        self, struct_id: str, struct_data: Mapping[str, object]
+    ) -> Tuple[str, str]:
         """返回 (显示名, 字段摘要)"""
-        name_value = struct_data.get("name")
-        display_name = str(name_value).strip() if isinstance(name_value, str) else struct_id
+        name_value = struct_data.get("name") or struct_data.get("struct_name")
+        display_name = (
+            str(name_value).strip() if isinstance(name_value, str) else struct_id
+        )
 
         fields: List[Tuple[str, str]] = []
         value_entries = struct_data.get("value")
@@ -154,6 +158,24 @@ class StructBindingDialog(BaseDialog):
                     continue
                 canonical_type = param_type_to_canonical(param_type)
                 fields.append((field_name, canonical_type))
+        else:
+            fields_entries = struct_data.get("fields")
+            if isinstance(fields_entries, Sequence):
+                for entry in fields_entries:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    raw_key = entry.get("field_name")
+                    raw_param_type = entry.get("param_type")
+                    field_name = str(raw_key).strip() if isinstance(raw_key, str) else ""
+                    param_type = (
+                        str(raw_param_type).strip()
+                        if isinstance(raw_param_type, str)
+                        else ""
+                    )
+                    if not field_name or not param_type:
+                        continue
+                    canonical_type = param_type_to_canonical(param_type)
+                    fields.append((field_name, canonical_type))
         summary = format_field_pairs_summary(fields)
         return display_name, summary
 
@@ -231,38 +253,76 @@ class StructBindingDialog(BaseDialog):
         self.field_list.clear()
 
         value_entries = struct_data.get("value")
-        if not isinstance(value_entries, Sequence):
+        fields_entries = struct_data.get("fields")
+        if not isinstance(value_entries, Sequence) and not isinstance(
+            fields_entries, Sequence
+        ):
             return
 
         existing_selected: List[str] = []
         if struct_id == self._current_struct_id and self._current_field_names:
             existing_selected = list(self._current_field_names)
 
-        for entry in value_entries:
-            if not isinstance(entry, Mapping):
-                continue
-            raw_name = entry.get("key")
-            raw_param_type = entry.get("param_type")
-            field_name = str(raw_name).strip() if isinstance(raw_name, str) else ""
-            param_type = str(raw_param_type).strip() if isinstance(raw_param_type, str) else ""
-            if not field_name or not param_type:
-                continue
+        if isinstance(value_entries, Sequence):
+            for entry in value_entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                raw_name = entry.get("key")
+                raw_param_type = entry.get("param_type")
+                field_name = str(raw_name).strip() if isinstance(raw_name, str) else ""
+                param_type = (
+                    str(raw_param_type).strip()
+                    if isinstance(raw_param_type, str)
+                    else ""
+                )
+                if not field_name or not param_type:
+                    continue
 
-            canonical_type = param_type_to_canonical(param_type)
-            display_text = f"{field_name}（{canonical_type}）"
+                canonical_type = param_type_to_canonical(param_type)
+                display_text = f"{field_name}（{canonical_type}）"
 
-            item = QtWidgets.QListWidgetItem(display_text, self.field_list)
-            item.setFlags(
-                QtCore.Qt.ItemFlag.ItemIsEnabled
-                | QtCore.Qt.ItemFlag.ItemIsSelectable
-                | QtCore.Qt.ItemFlag.ItemIsUserCheckable
-            )
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, field_name)
+                item = QtWidgets.QListWidgetItem(display_text, self.field_list)
+                item.setFlags(
+                    QtCore.Qt.ItemFlag.ItemIsEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsSelectable
+                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, field_name)
 
-            if field_name in existing_selected or not existing_selected:
-                item.setCheckState(QtCore.Qt.CheckState.Checked)
-            else:
-                item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+                if field_name in existing_selected or not existing_selected:
+                    item.setCheckState(QtCore.Qt.CheckState.Checked)
+                else:
+                    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+        elif isinstance(fields_entries, Sequence):
+            for entry in fields_entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                raw_name = entry.get("field_name")
+                raw_param_type = entry.get("param_type")
+                field_name = str(raw_name).strip() if isinstance(raw_name, str) else ""
+                param_type = (
+                    str(raw_param_type).strip()
+                    if isinstance(raw_param_type, str)
+                    else ""
+                )
+                if not field_name or not param_type:
+                    continue
+
+                canonical_type = param_type_to_canonical(param_type)
+                display_text = f"{field_name}（{canonical_type}）"
+
+                item = QtWidgets.QListWidgetItem(display_text, self.field_list)
+                item.setFlags(
+                    QtCore.Qt.ItemFlag.ItemIsEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsSelectable
+                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, field_name)
+
+                if field_name in existing_selected or not existing_selected:
+                    item.setCheckState(QtCore.Qt.CheckState.Checked)
+                else:
+                    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
 
     def validate(self) -> bool:
         """点击确定按钮时读取当前结构体与字段选择。"""
