@@ -20,6 +20,10 @@ class PackageDirtyState:
     instance_ids: set[str] = field(default_factory=set)
     level_entity_dirty: bool = False
     combat_dirty: bool = False
+    # 仅标记“战斗预设资源本体”的脏项（section_key, item_id）。
+    # - section_key: "player_template" / "player_class" / "unit_status" / "skill" / "projectile" / "item"
+    # - item_id    : 对应资源 ID
+    combat_preset_keys: set[tuple[str, str]] = field(default_factory=set)
     management_keys: set[str] = field(default_factory=set)
     signals_dirty: bool = False
     index_dirty: bool = False
@@ -32,6 +36,7 @@ class PackageDirtyState:
             or self.instance_ids
             or self.level_entity_dirty
             or self.combat_dirty
+            or self.combat_preset_keys
             or self.management_keys
             or self.signals_dirty
             or self.index_dirty
@@ -54,6 +59,7 @@ class PackageDirtyState:
             instance_ids=set(self.instance_ids),
             level_entity_dirty=self.level_entity_dirty,
             combat_dirty=self.combat_dirty,
+            combat_preset_keys=set(self.combat_preset_keys),
             management_keys=set(self.management_keys),
             signals_dirty=self.signals_dirty,
             index_dirty=self.index_dirty,
@@ -66,6 +72,7 @@ class PackageDirtyState:
         self.instance_ids.clear()
         self.level_entity_dirty = False
         self.combat_dirty = False
+        self.combat_preset_keys.clear()
         self.management_keys.clear()
         self.signals_dirty = False
         self.index_dirty = False

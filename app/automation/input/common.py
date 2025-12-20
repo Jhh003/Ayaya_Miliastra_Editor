@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 import ctypes
+from ctypes import wintypes
 import time
 
 from engine.configs.settings import settings
@@ -125,6 +126,91 @@ def ensure_foreground(window_title_hint: Optional[str]) -> bool:
         return False
 
     return bool(ctypes.windll.user32.SetForegroundWindow(int(hwnd)))
+
+
+def set_window_topmost(hwnd: int, *, topmost: bool = True, activate: bool = True) -> bool:
+    """将指定 HWND 设置为置顶/取消置顶。
+
+    Args:
+        hwnd: 顶层窗口句柄
+        topmost: True=置顶（HWND_TOPMOST），False=取消置顶（HWND_NOTOPMOST）
+        activate: 是否尝试将窗口激活到前台（失败不抛错，仅影响激活行为）
+
+    Returns:
+        True 表示 SetWindowPos 成功；否则 False。
+    """
+    if int(hwnd) == 0:
+        return False
+
+    user32 = ctypes.windll.user32
+    # Win64 关键：显式声明签名，避免 HWND 被当作 32 位 int 传参导致溢出或截断。
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+
+    # 常量：置顶/取消置顶
+    hwnd_insert_after = wintypes.HWND(-1) if bool(topmost) else wintypes.HWND(-2)  # TOPMOST / NOTOPMOST
+
+    # 标志：不改大小/位置，只调整 Z-Order；必要时显示窗口。
+    swp_nosize = 0x0001
+    swp_nomove = 0x0002
+    swp_noactivate = 0x0010
+    swp_showwindow = 0x0040
+    flags = int(swp_nosize | swp_nomove | swp_showwindow)
+    if not bool(activate):
+        flags |= int(swp_noactivate)
+
+    ok = user32.SetWindowPos(
+        wintypes.HWND(int(hwnd)),
+        hwnd_insert_after,
+        0,
+        0,
+        0,
+        0,
+        ctypes.c_uint(int(flags)),
+    )
+    if bool(activate):
+        user32.SetForegroundWindow(wintypes.HWND(int(hwnd)))
+    return bool(ok)
+
+
+def is_window_topmost(hwnd: int) -> bool:
+    """判断指定 HWND 是否处于 WS_EX_TOPMOST（置顶）状态。"""
+    if int(hwnd) == 0:
+        return False
+
+    user32 = ctypes.windll.user32
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+
+    gwl_exstyle = -20
+    ws_ex_topmost = 0x00000008
+    ex_style = user32.GetWindowLongW(wintypes.HWND(int(hwnd)), ctypes.c_int(int(gwl_exstyle)))
+    return bool(int(ex_style) & int(ws_ex_topmost))
+
+
+def ensure_topmost(window_title_hint: Optional[str], *, activate: bool = True) -> bool:
+    """按标题提示查找顶层窗口，并将其置顶。
+
+    说明：
+    - 只作用于“匹配标题提示的首个可见顶层窗口”，不影响其它窗口；
+    - 若未找到窗口，返回 False，不抛错（保持与 ensure_foreground 一致的容错语义）。
+    """
+    if not window_title_hint:
+        return False
+    hwnd = find_window_handle(str(window_title_hint), case_sensitive=False)
+    if int(hwnd) == 0:
+        return False
+    return set_window_topmost(int(hwnd), topmost=True, activate=bool(activate))
 
 
 def to_screen_coordinates(point: Tuple[float, float], dpi_scale: float) -> Tuple[int, int]:

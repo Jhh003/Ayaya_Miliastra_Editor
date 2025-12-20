@@ -28,6 +28,7 @@ from engine.configs.settings import settings
 from app.automation import capture as editor_capture
 from app.automation.vision import list_nodes
 from app.automation.vision.ocr_template_profile import build_ocr_template_profile_mismatch_hint
+from app.automation.input.common import ensure_foreground
 
 
 class ExecutionThread(QtCore.QThread):
@@ -159,6 +160,13 @@ class ExecutionThread(QtCore.QThread):
         reset_created_tracking = getattr(self.executor, "reset_created_node_tracking", None)
         if callable(reset_created_tracking):
             reset_created_tracking(self.monitor.log)
+
+        # 执行开始时：仅将沙箱窗口切到前台一次（不置顶、不持续保持）。
+        focused = ensure_foreground(getattr(self.executor, "window_title", None))
+        if bool(focused):
+            self.monitor.log("✓ 沙箱窗口已切到前台（本轮仅执行一次）")
+        else:
+            self.monitor.log("注意：未找到沙箱窗口或切前台失败，继续执行（可能会被其它窗口遮挡）")
         
         try:
             # 阶段2: 选择锚点

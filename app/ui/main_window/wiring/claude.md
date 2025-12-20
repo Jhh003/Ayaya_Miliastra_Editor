@@ -10,6 +10,7 @@
   - 右侧面板 binder：属性面板/战斗详情/管理编辑页/验证详情等右侧面板的信号连接集中管理。
   以避免在 `ui_setup_mixin.py` 中堆积大量 `.connect(...)` 与闭包逻辑。
 - 右侧标签注册表的“tab_id/标题/模式约束”矩阵配置已迁移到 `ui/main_window/features/RightPanelAssemblyFeature`，以减少新增右侧面板时的多点修改。
+- 战斗预设右侧详情面板（玩家模板/职业/技能/道具）的 `data_changed` 绑定遵循“按条目增量持久化”：binder 会携带当前 `(section_key, item_id)` 触发去抖保存，仅写回对应资源本体；索引引用的写回由库页增删改事件与 `combat_dirty/index_dirty` 驱动。
 - `right_panel_registry_config.py` 已移除：避免出现“双真源”与隐式回退路径。
 - 部分“新增功能高频扩展点”（例如右侧动态面板）允许迁移到 `ui/main_window/features/`：Feature 可以在 registry 初始化后自行创建控件并注册 tab，避免为新增面板同时改 `ui_setup_mixin.py + right_panel_registry_config.py + 若干 mixin`。
 

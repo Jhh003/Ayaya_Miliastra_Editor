@@ -119,23 +119,24 @@ def resolve_automation_ui_params(*, workspace_root: Optional[Path] = None, prefe
     profile_name = str(selection.selected_profile_name or "").strip()
     detected_display = selection.detected_display
     scale_percent = int(detected_display.scale_percent)
-    screen_short_side_px = int(detected_display.short_side_px)
+    screen_width_px = int(detected_display.screen_width_px)
 
-    resolution_short_side_baseline = {
-        "4K": 2160,
-        "2K": 1440,
-        "1080": 1080,
+    resolution_width_baseline = {
+        # 约定：分辨率档位按“屏幕宽度”判定，以适配不同长宽比（例如 2560x1080 仍归入 2K 档位）。
+        "4K": 3840,
+        "2K": 2560,
+        "1080": 1920,
     }
     max_relative_delta = 0.25
 
-    def match_resolution_tag_by_short_side(short_side_px: int) -> Optional[str]:
+    def match_resolution_tag_by_width(screen_width_px_value: int) -> Optional[str]:
         best_tag: Optional[str] = None
         best_ratio: Optional[float] = None
-        for tag, baseline_px in resolution_short_side_baseline.items():
+        for tag, baseline_px in resolution_width_baseline.items():
             baseline_value = int(baseline_px)
             if baseline_value <= 0:
                 continue
-            ratio = abs(float(short_side_px) - float(baseline_value)) / float(baseline_value)
+            ratio = abs(float(screen_width_px_value) - float(baseline_value)) / float(baseline_value)
             if best_ratio is None or ratio < float(best_ratio):
                 best_ratio = float(ratio)
                 best_tag = str(tag).upper()
@@ -145,7 +146,7 @@ def resolve_automation_ui_params(*, workspace_root: Optional[Path] = None, prefe
             return None
         return best_tag
 
-    matched_resolution_tag = match_resolution_tag_by_short_side(screen_short_side_px)
+    matched_resolution_tag = match_resolution_tag_by_width(screen_width_px)
 
     # 分辨率档位的“标题栏基准高度”（100% 缩放下）
     # - 1080@100%：用户实测 20px

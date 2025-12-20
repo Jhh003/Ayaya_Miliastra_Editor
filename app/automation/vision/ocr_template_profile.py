@@ -12,8 +12,8 @@ profile_name 推荐格式：
 - <resolution>-<locale> 例如：4K-CN（legacy：不包含缩放信息）
 
 匹配策略（面向未来 2K/1080 扩展）：
-- 分辨率按“屏幕短边”与目标档位短边（4K=2160、2K=1440、1080=1080）做近似匹配，
-  允许一定比例偏差以放宽长宽比要求（例如 1080x900 可匹配到 1080 档位）。
+- 分辨率按“屏幕宽度”与目标档位宽度（4K=3840、2K=2560、1080=1920）做近似匹配，
+  允许一定比例偏差以放宽长宽比要求（例如 2560x1080 可匹配到 2K 档位）。
 - 缩放优先精确匹配（100/125/150...），若缺失则可回退到 legacy profile 或最近档位。
 
 注意：
@@ -32,14 +32,18 @@ from app.automation.capture.dpi_awareness import ensure_dpi_awareness_once
 
 _ENV_OCR_TEMPLATE_PROFILE = "GRAPH_GENERATER_OCR_TEMPLATE_PROFILE"
 
-# 分辨率档位（按“屏幕短边”定义；不强制要求严格长宽比）
-_RESOLUTION_SHORT_SIDE_BASELINE: Dict[str, int] = {
-    "4K": 2160,
-    "2K": 1440,
-    "1080": 1080,
+# 分辨率档位（按“屏幕宽度”定义；不强制要求严格长宽比）
+_RESOLUTION_WIDTH_BASELINE: Dict[str, int] = {
+    # 约定：分辨率档位用“横向像素宽度”来判定，以适配不同长宽比（例如 2560x1080 仍归入 2K 档位）。
+    # - 1080（FHD）：1920x1080
+    # - 2K（QHD）：2560x1440
+    # - 4K（UHD）：3840x2160
+    "4K": 3840,
+    "2K": 2560,
+    "1080": 1920,
 }
 
-# 允许的短边相对偏差（例如 1080 vs 900 => 16.7%）
+# 允许的宽度相对偏差（例如 1920 vs 1680 => 12.5%）
 _MAX_RESOLUTION_RELATIVE_DELTA = 0.25
 
 
@@ -198,11 +202,11 @@ def _detect_windows_display_settings() -> DetectedDisplaySettings:
     )
 
 
-def _resolution_tag_to_baseline_short_side_px(resolution_tag: str) -> Optional[int]:
+def _resolution_tag_to_baseline_width_px(resolution_tag: str) -> Optional[int]:
     normalized = str(resolution_tag or "").strip().upper()
     if not normalized:
         return None
-    baseline = _RESOLUTION_SHORT_SIDE_BASELINE.get(normalized)
+    baseline = _RESOLUTION_WIDTH_BASELINE.get(normalized)
     if baseline is not None:
         return int(baseline)
     if normalized.isdigit():
@@ -213,16 +217,16 @@ def _resolution_tag_to_baseline_short_side_px(resolution_tag: str) -> Optional[i
 
 def _match_resolution_tag(
     *,
-    screen_short_side_px: int,
+    screen_width_px: int,
     candidate_tags: Iterable[str],
 ) -> Optional[str]:
     best_tag: Optional[str] = None
     best_ratio: Optional[float] = None
     for tag in candidate_tags:
-        baseline = _resolution_tag_to_baseline_short_side_px(tag)
+        baseline = _resolution_tag_to_baseline_width_px(tag)
         if baseline is None or baseline <= 0:
             continue
-        ratio = abs(float(screen_short_side_px) - float(baseline)) / float(baseline)
+        ratio = abs(float(screen_width_px) - float(baseline)) / float(baseline)
         if best_ratio is None or ratio < float(best_ratio):
             best_ratio = float(ratio)
             best_tag = str(tag).upper()
@@ -335,7 +339,7 @@ def resolve_ocr_template_profile_selection(
     # 3) 自动匹配：分辨率档位 + 缩放
     distinct_tags = sorted({profile.resolution_tag for profile in locale_profiles if profile.resolution_tag})
     matched_resolution_tag = _match_resolution_tag(
-        screen_short_side_px=int(detected_display.short_side_px),
+        screen_width_px=int(detected_display.screen_width_px),
         candidate_tags=distinct_tags,
     )
 

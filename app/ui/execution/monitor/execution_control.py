@@ -95,7 +95,9 @@ class ExecutionControl(QtCore.QObject):
     
     def is_execution_allowed(self) -> bool:
         """检查是否允许执行"""
-        return self.is_running and not self.is_paused
+        # 注意：allow_continue 的语义是“是否允许继续执行（未终止）”。
+        # 暂停由 wait_if_paused() 负责阻塞等待，不应把 paused 当作“终止”。
+        return bool(self.is_running)
     
     def is_step_mode_enabled(self) -> bool:
         """检查是否启用单步模式"""
@@ -133,10 +135,14 @@ class ExecutionControl(QtCore.QObject):
     
     def _on_stop_clicked(self) -> None:
         """终止按钮点击"""
-        self.is_running = False
-        self.is_paused = False
+        if not self.is_running:
+            return
+        # 立刻将所有控制按钮置为“无效”状态，避免用户产生“点了没用但看起来可点”的错觉。
+        # 实际执行终止由上层订阅 stop_requested 后完成（通常会调用 monitor.stop_monitoring()）。
+        self.stop_execution()
         self.stop_requested.emit()
         self.log_message.emit("终止执行")
+        self.status_changed.emit("已终止")
     
     def _on_step_mode_toggled(self, state: int) -> None:
         """单步模式切换"""
@@ -153,8 +159,13 @@ class ExecutionControl(QtCore.QObject):
             return
         if not self.step_mode_enabled:
             return
-        # 允许继续一步；下一步开始时由外部在 step_will_start 中重新触发暂停
+        # 单步模式：允许继续一步，但必须保持 step_mode_enabled 不变，
+        # 否则下一步开始时外部的 step_will_start 将不会再次触发暂停。
         if self.is_paused:
-            self._on_resume_clicked()
+            self.is_paused = False
+            self._pause_button.setEnabled(True)
+            self._resume_button.setEnabled(False)
+            self.log_message.emit("继续下一步")
+            self.status_changed.emit("执行中...")
         # 若当前未处于暂停但用户点击了"下一步"，忽略（执行线程会在下一步开始前再暂停）
 

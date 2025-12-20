@@ -124,15 +124,12 @@ class CompositeModePresenter(BaseModePresenter):
 
 
 class ValidationModePresenter(BaseModePresenter):
-    def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
+    def enter(self, main_window: Any, *, request: ModeEnterRequest) -> str | None:
         _ = request
         main_window.property_panel.clear()
-
-        if hasattr(main_window, "_trigger_validation_full"):
-            main_window._trigger_validation_full()
-        else:
-            main_window._trigger_validation()
-        return None
+        # 注意：进入“验证”模式不再默认触发一次验证，避免用户仅查看历史结果时产生额外耗时。
+        # 验证由用户显式触发：面板按钮/快捷键（F5）等入口。
+        return "validation_detail"
 
 
 class PackagesModePresenter(BaseModePresenter):
@@ -205,10 +202,29 @@ class CombatModePresenter(BaseModePresenter):
     def enter(self, main_window: Any, *, request: ModeEnterRequest) -> None:
         main_window.property_panel.clear()
 
-        existing_selection = None
-        get_selection_before = getattr(main_window.combat_widget, "get_current_selection", None)
-        if callable(get_selection_before):
-            existing_selection = get_selection_before()
+        from app.ui.graph.library_pages.library_scaffold import LibrarySelection
+
+        def _normalize_combat_selection(selection: object | None) -> tuple[str, str] | None:
+            if not isinstance(selection, LibrarySelection):
+                return None
+            if selection.kind != "combat":
+                return None
+            item_id = selection.id
+            if not item_id:
+                return None
+            section_key = ""
+            if isinstance(selection.context, dict):
+                raw_section_key = selection.context.get("section_key")
+                if isinstance(raw_section_key, str):
+                    section_key = raw_section_key
+            if not section_key:
+                return None
+            return (section_key, item_id)
+
+        selection_before: tuple[str, str] | None = None
+        get_selection = getattr(main_window.combat_widget, "get_selection", None)
+        if callable(get_selection):
+            selection_before = _normalize_combat_selection(get_selection())
 
         consume_pending = getattr(main_window, "_consume_pending_combat_selection", None)
         if callable(consume_pending):
@@ -216,35 +232,36 @@ class CombatModePresenter(BaseModePresenter):
             if pending_selection is not None:
                 section_key, item_id = pending_selection
                 if section_key and item_id:
-                    if not existing_selection or not existing_selection[1]:
-                        from app.ui.graph.library_pages.library_scaffold import LibrarySelection
-
-                        selection = LibrarySelection(
-                            kind="combat",
-                            id=item_id,
-                            context={"section_key": section_key},
-                        )
+                    if selection_before is None:
                         set_selection = getattr(main_window.combat_widget, "set_selection", None)
                         if callable(set_selection):
-                            set_selection(selection)
+                            set_selection(
+                                LibrarySelection(
+                                    kind="combat",
+                                    id=item_id,
+                                    context={"section_key": section_key},
+                                )
+                            )
 
         ensure_default_selection = getattr(main_window.combat_widget, "ensure_default_selection", None)
         if callable(ensure_default_selection):
             ensure_default_selection()
 
-        get_selection = getattr(main_window.combat_widget, "get_current_selection", None)
+        selection_after: tuple[str, str] | None = None
         if callable(get_selection):
-            current_selection = get_selection()
-            if current_selection is not None:
-                section_key, item_id = current_selection
-                if section_key == "player_template":
-                    main_window._on_player_template_selected(item_id)
-                elif section_key == "player_class":
-                    main_window._on_player_class_selected(item_id)
-                elif section_key == "skill":
-                    main_window._on_skill_selected(item_id)
-                elif section_key == "item":
-                    main_window._on_item_selected(item_id)
+            selection_after = _normalize_combat_selection(get_selection())
+
+        # 若模式切回时选中未变化，库页不会再发 selection_changed；此处显式同步右侧详情面板。
+        if selection_after is not None and selection_after == selection_before:
+            section_key, item_id = selection_after
+            if section_key == "player_template":
+                main_window._on_player_template_selected(item_id)
+            elif section_key == "player_class":
+                main_window._on_player_class_selected(item_id)
+            elif section_key == "skill":
+                main_window._on_skill_selected(item_id)
+            elif section_key == "item":
+                main_window._on_item_selected(item_id)
 
         _ = request
         return None

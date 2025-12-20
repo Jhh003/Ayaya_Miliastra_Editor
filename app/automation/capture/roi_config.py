@@ -122,11 +122,16 @@ def get_region_rect(screenshot: Image.Image, region_name: str) -> Tuple[int, int
         out_x = int(anchor_x - target_w // 2 + int(offset_px[0]))
         out_y = int(anchor_y + int(offset_px[1]))
 
-        # 约束在截图范围内（防止越界导致后续裁剪异常）
-        out_x = max(0, min(int(out_x), int(img_width)))
-        out_y = max(0, min(int(out_y), int(img_height)))
-        # 宽高不做裁剪（允许越出窗口底边的定义，后续 OCR 会自然裁剪）
-        return (int(out_x), int(out_y), int(target_w), int(target_h))
+        # 约束在截图范围内：保证整个矩形都落在图像内部。
+        # 说明：仅 clamp 左上角会导致 (x==img_width 或 y==img_height) 的“完全越界矩形”，
+        # overlays 会画到窗口外、OCR/PIL crop 也会引入黑边甚至得到空图。
+        fitted_w = min(int(target_w), int(img_width))
+        fitted_h = min(int(target_h), int(img_height))
+        max_left = max(0, int(img_width - fitted_w))
+        max_top = max(0, int(img_height - fitted_h))
+        out_x = max(0, min(int(out_x), int(max_left)))
+        out_y = max(0, min(int(out_y), int(max_top)))
+        return (int(out_x), int(out_y), int(fitted_w), int(fitted_h))
 
     # 常规比例区域
     height_start, height_end = config["height_range"]

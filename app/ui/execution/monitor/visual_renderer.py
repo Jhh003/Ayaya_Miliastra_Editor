@@ -46,6 +46,14 @@ class VisualRenderer(QtCore.QObject):
         self._current_run_images: list[QtGui.QPixmap] = []
         self._current_run_titles: list[str] = []
         self._history_max_images: int = 200
+
+        # 面板缩放适配：当右侧面板被拖拽缩窄时，QLabel 变窄但旧 pixmap 不会自动重算，
+        # 会导致“图像被裁剪”。这里在 Resize 时用“最后一帧完整原图”重新缩放一次。
+        # 为避免拖拽过程中高频 SmoothTransformation 卡顿，采用“拖拽时快速缩放 + 停止后补一次平滑缩放”的策略。
+        self._last_scaled_target_size: QtCore.QSize | None = None
+        self._pending_smooth_rescale_timer = QtCore.QTimer(self)
+        self._pending_smooth_rescale_timer.setSingleShot(True)
+        self._pending_smooth_rescale_timer.timeout.connect(self._rescale_last_pixmap_smooth)
         
         # 安装事件过滤器（双击放大预览）
         self._screenshot_label.installEventFilter(self)
@@ -136,22 +144,58 @@ class VisualRenderer(QtCore.QObject):
     
     def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
         """事件过滤器：处理双击放大预览"""
-        if obj is self._screenshot_label and event.type() == QtCore.QEvent.Type.MouseButtonDblClick:
-            if self._last_full_pixmap is not None and not self._last_full_pixmap.isNull():
-                images = self._current_run_images if self._current_run_images else [self._last_full_pixmap]
-                start_index = len(images) - 1
-                titles = self._current_run_titles if self._current_run_titles else []
-                dialog = _ImageHistoryPreviewDialog(images, start_index, self._parent_widget, titles)
-                dialog.setWindowModality(Qt.WindowModality.NonModal)
-                dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
-                self._modeless_previews.append(dialog)
-                def on_destroyed(destroyed_obj=None, dlg=dialog):
-                    if dlg in self._modeless_previews:
-                        self._modeless_previews.remove(dlg)
-                dialog.destroyed.connect(on_destroyed)
-                dialog.show()
-                return True
+        if obj is self._screenshot_label:
+            if event.type() == QtCore.QEvent.Type.Resize:
+                self._on_screenshot_label_resized()
+                return False
+            if event.type() == QtCore.QEvent.Type.MouseButtonDblClick:
+                if self._last_full_pixmap is not None and not self._last_full_pixmap.isNull():
+                    images = self._current_run_images if self._current_run_images else [self._last_full_pixmap]
+                    start_index = len(images) - 1
+                    titles = self._current_run_titles if self._current_run_titles else []
+                    dialog = _ImageHistoryPreviewDialog(images, start_index, self._parent_widget, titles)
+                    dialog.setWindowModality(Qt.WindowModality.NonModal)
+                    dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+                    self._modeless_previews.append(dialog)
+
+                    def on_destroyed(destroyed_obj=None, dlg=dialog):
+                        if dlg in self._modeless_previews:
+                            self._modeless_previews.remove(dlg)
+
+                    dialog.destroyed.connect(on_destroyed)
+                    dialog.show()
+                    return True
         return False
+
+    def _on_screenshot_label_resized(self) -> None:
+        """截图标签尺寸变化：按新尺寸重新缩放最后一帧图片，避免缩窄时被裁剪。"""
+        if self._last_full_pixmap is None or self._last_full_pixmap.isNull():
+            return
+        self._rescale_last_pixmap_fast()
+        # 拖拽过程中会连续触发 Resize：用 debounce 在停止拖拽后补一次平滑缩放
+        self._pending_smooth_rescale_timer.start(90)
+
+    def _rescale_last_pixmap_fast(self) -> None:
+        self._rescale_last_pixmap(Qt.TransformationMode.FastTransformation)
+
+    def _rescale_last_pixmap_smooth(self) -> None:
+        self._rescale_last_pixmap(Qt.TransformationMode.SmoothTransformation)
+
+    def _rescale_last_pixmap(self, mode: Qt.TransformationMode) -> None:
+        label_size = self._screenshot_label.size()
+        if label_size.width() <= 1 or label_size.height() <= 1:
+            return
+        if isinstance(self._last_scaled_target_size, QtCore.QSize):
+            if label_size == self._last_scaled_target_size and mode == Qt.TransformationMode.FastTransformation:
+                # FastTransformation 只用于拖拽过程中“跟手”；同尺寸下避免重复缩放浪费 CPU
+                return
+        scaled = self._last_full_pixmap.scaled(
+            label_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            mode,
+        )
+        self._screenshot_label.setPixmap(scaled)
+        self._last_scaled_target_size = QtCore.QSize(label_size)
     
     def _append_image_to_history(self, image: QtGui.QPixmap, title: str | None = None) -> None:
         """追加图片到截图记录"""

@@ -7,8 +7,9 @@
 - `coordinator.py`：`ModePresenterCoordinator`，负责按 `ViewMode` 分派到对应 presenter。
 - `presenters.py`：各模式 presenter 的实现（TEMPLATE/PLACEMENT/COMBAT/MANAGEMENT/TODO/COMPOSITE/GRAPH_LIBRARY/VALIDATION/GRAPH_EDITOR/PACKAGES）。
   - 进入图库模式时统一调用库页协议 `reload()` 触发刷新与选中同步，不再依赖旧式 `refresh()` 入口。
+  - 进入 `COMBAT` 时使用库页协议 `get_selection()/set_selection()` 管理“选中上下文”，并在“选中未发生变化”的切回路径下显式同步右侧战斗详情面板，避免依赖用户重新点击列表项才能刷新。
   - 进入 `GRAPH_EDITOR` 时会将全局 `app_state.graph_view` 从其它 Host（例如 TODO 预览）归还到编辑器 Host，并恢复右上角浮动控件（“前往执行”按钮）与交互开关，避免跨模式复用画布导致的 UI 状态漂移。
-  - 进入 `VALIDATION` 时优先触发“存档综合校验 + 节点图源码校验（当前存档范围）”，确保验证页面覆盖 UI 与 CLI 的核心规则集合，减少入口漂移。
+- 进入 `VALIDATION` 时不再默认触发校验：用于查看已存在的验证结果；验证统一由显式入口触发（验证面板按钮 / F5 快捷键），避免仅切页就重复执行耗时校验。
 
 ## 注意事项
 - Presenter 不直接读写磁盘，不吞异常；必要依赖缺失应直接抛出以暴露初始化顺序问题。

@@ -15,14 +15,23 @@ from ..ast_utils import (
     infer_graph_scope,
     iter_class_methods,
     line_span_text,
+    normalize_expr,
 )
 from ..node_index import event_node_names
 
 
-class EventNameRule(ValidationRule):
-    """事件名合法性校验：register_event_handler 注册的事件名必须来源于事件节点或信号。"""
+class EventHandlerNameRule(ValidationRule):
+    """事件回调命名校验：
 
-    rule_id = "engine_code_event_name"
+    - 当 register_event_handler 注册的是**内置事件**（来自事件节点列表）时，回调必须为 `on_<事件名>`；
+    - 当注册的是**信号事件**（signal_id 或可由信号库解析的信号名称）时，回调命名不做强制约束。
+
+    背景：
+    - Graph Code 里常见写法 `on_定时器触发时_XXX` 会造成“看起来像新事件，但实际注册的是同一个内置事件”，
+      使代码审阅与规则系统难以对齐；因此对内置事件回调名强制使用标准事件名。
+    """
+
+    rule_id = "engine_code_event_handler_name"
     category = "代码规范"
     default_level = "error"
 
@@ -34,7 +43,7 @@ class EventNameRule(ValidationRule):
         tree = get_cached_module(ctx)
         module_constant_strings = _collect_module_constant_strings(tree)
         scope = infer_graph_scope(ctx)
-        valid_event_names = event_node_names(ctx.workspace_path, scope)
+        builtin_event_names = event_node_names(ctx.workspace_path, scope)
         signal_repo = get_default_signal_repository()
         issues: List[EngineIssue] = []
 
@@ -69,27 +78,47 @@ class EventNameRule(ValidationRule):
                 if not event_name:
                     continue
 
-                # 信号 ID（signal_xxx）作为事件名时放行，由信号系统规则单独校验
+                # 信号事件：不强制回调名（EventNameRule/信号规则负责其余约束）
                 if event_name.startswith("signal_"):
                     continue
-
-                # 显示名称为已知信号名时同样视为合法，解析为 ID 的职责交给信号系统与图解析器。
                 if signal_repo.resolve_id_by_name(event_name):
                     continue
 
-                if event_name in valid_event_names:
+                # 非内置事件（未知事件名）交由 EventNameRule 报错；这里不重复报。
+                if event_name not in builtin_event_names:
                     continue
 
+                handler_node = None
+                if len(positional_args) >= 2:
+                    handler_node = positional_args[1]
+                else:
+                    for keyword in getattr(node, "keywords", []) or []:
+                        if keyword.arg in {"handler", "callback", "func"}:
+                            handler_node = keyword.value
+                            break
+
+                if handler_node is None:
+                    continue
+
+                handler_name = _extract_handler_symbol_name(handler_node)
+                expected_name = f"on_{event_name}"
+                if handler_name == expected_name:
+                    continue
+
+                handler_text = handler_name if handler_name else normalize_expr(handler_node)
                 message = (
-                    f"{line_span_text(event_arg_node)}: 事件名 '{event_name}' 不在当前引擎事件节点列表中；"
-                    f"请检查是否拼写错误，或改为使用已有事件/信号（例如通过【监听信号】节点绑定信号后使用信号ID）。"
+                    f"{line_span_text(handler_node)}: 内置事件 '{event_name}' 的回调命名必须为 "
+                    f"'{expected_name}'，当前为 '{handler_text}'。"
+                    f"内置事件不允许在 `on_{event_name}` 后追加后缀；"
+                    f"若需要区分不同业务分支，请在同一个标准回调内部通过节点逻辑分流。"
+                    f"（信号事件允许自定义信号名与回调名）"
                 )
                 issues.append(
                     create_rule_issue(
                         self,
                         file_path,
-                        event_arg_node,
-                        "CODE_UNKNOWN_EVENT_NAME",
+                        handler_node,
+                        "CODE_EVENT_HANDLER_NAME_MISMATCH",
                         message,
                     )
                 )
@@ -97,7 +126,22 @@ class EventNameRule(ValidationRule):
         return issues
 
 
-__all__ = ["EventNameRule"]
+def _extract_handler_symbol_name(node: ast.AST) -> str:
+    """从 handler AST 节点提取“符号名”。
+
+    - `self.on_实体创建时` → `on_实体创建时`
+    - `on_实体创建时` → `on_实体创建时`
+    - 其他表达式返回空字符串（由调用方决定如何展示）
+    """
+
+    if isinstance(node, ast.Attribute) and isinstance(getattr(node, "attr", None), str):
+        return node.attr
+    if isinstance(node, ast.Name) and isinstance(getattr(node, "id", None), str):
+        return node.id
+    return ""
+
+
+__all__ = ["EventHandlerNameRule"]
 
 
 def _collect_module_constant_strings(tree: ast.AST) -> Dict[str, str]:

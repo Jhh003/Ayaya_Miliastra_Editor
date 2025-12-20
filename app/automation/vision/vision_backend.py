@@ -468,6 +468,11 @@ def phase_correlation_delta(prev_image: Image.Image, next_image: Image.Image) ->
     shift, response = cv2.phaseCorrelate(prev_f32, next_f32)
     dx = float(shift[0])
     dy = float(shift[1])
+    # response 越接近 1 表示越可信；纹理不足/遮挡/闪烁 UI 等情况下 response 可能很低，
+    # 这时 shift 往往是随机噪声，直接返回会导致上层坐标映射（origin）快速漂移。
+    min_response = 0.15
+    if float(response) < float(min_response):
+        return 0.0, 0.0
     return dx, dy
 
 

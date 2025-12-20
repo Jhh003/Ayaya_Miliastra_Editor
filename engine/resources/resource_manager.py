@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
+import os
 
 from engine.configs.resource_types import ResourceType
 from engine.resources.persistent_graph_cache_manager import PersistentGraphCacheManager
@@ -906,10 +907,14 @@ class ResourceManager:
         for graph_type in ["server", "client"]:
             type_dir = self.resource_library_dir / "节点图" / graph_type
             if type_dir.exists():
-                for item in type_dir.rglob("*"):
-                    if item.is_dir():
-                        # 计算相对路径
-                        rel_path = item.relative_to(type_dir)
+                # 这里不使用 Path.rglob：在 Windows 上若遇到异常目录项（权限/非法名/损坏符号链接等），
+                # rglob 可能直接抛异常并中断，导致上层文件夹树被清空。
+                # os.walk 内部会跳过不可访问的目录（可选 onerror），更适合用于“尽力枚举”型 UI 展示。
+                for current_dir, sub_dirs, _file_names in os.walk(type_dir):
+                    current_dir_path = Path(current_dir)
+                    for sub_dir_name in list(sub_dirs):
+                        candidate_dir = current_dir_path / sub_dir_name
+                        rel_path = candidate_dir.relative_to(type_dir)
                         rel_parts = getattr(rel_path, "parts", ())
                         if not rel_parts:
                             continue

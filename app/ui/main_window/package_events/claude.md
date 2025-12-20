@@ -10,7 +10,7 @@
 - `management_panels_mixin.py`：管理模式右侧面板联动入口（薄壳）。保留对外稳定的 Mixin 方法名，实际编排委托给 coordinator。
 - `management_panels_coordinator.py`：管理模式右侧面板选择/刷新协调器。`signals/structs/main_camera/peripheral/equipment_*` 等专用面板的刷新入口由 `ui/main_window/management_right_panel_registry.py` 提供的注册表驱动（与 `RightPanelPolicy`、`RightPanelAssemblyFeature` 共享同一份 section→tab 规则）；Coordinator 只负责编排并保证 **selection 单次解析**：在 `on_management_selection_changed` 中只解析一次 `management_widget.get_selection()` 并将解析后的 `(section_key, item_id)` 作为参数传给 selection_updater，禁止 updater 再反查库页选中，避免协议漂移导致右侧面板静默空白。
 - `membership_mixin.py`：各类“所属存档”归属计算与写回（管理资源/信号/结构体/关卡变量等）
-- `immediate_persist_mixin.py`：库页数据变更的脏标记与去抖增量落盘请求
+- `immediate_persist_mixin.py`：库页数据变更的脏标记与去抖增量落盘请求。战斗预设将“索引引用变化”（`combat_dirty/index_dirty`）与“资源本体变化”（`combat_preset_key`）分离：仅编辑预设字段时只写回对应资源文件，不无条件写入存档索引；在 `global_view/unclassified_view` 下的战斗预设库页操作不会触发存档保存。
 - `resource_membership_mixin.py`：图/复合节点/模板/实例的所属存档变更与当前包索引内存同步；命中当前包时会标记 `index_dirty` 并走 `immediate_persist_mixin` 的去抖增量落盘，以确保归属变更只写回索引（不把资源对象本体误判为脏并写回资源文件）
 - `__init__.py`：导出拆分后的 Mixin（供聚合入口引用）
 

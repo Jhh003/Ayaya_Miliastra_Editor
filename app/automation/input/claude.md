@@ -4,7 +4,7 @@
 
 ## 当前状态
 - 主要模块：
-  - `common.py`：统一的等待/睡眠、日志输出、前景窗口管理和全局可视化/日志汇聚工具，前景窗口查找直接复用 `window_finder`，避免重复遍历顶层窗口。
+  - `common.py`：统一的等待/睡眠、日志输出、前景窗口管理与全局可视化/日志汇聚工具；窗口查找直接复用 `window_finder`，避免重复遍历顶层窗口。
   - `win_input_lowlevel.py`：SendInput 封装与绝对坐标/按键原语。
   - `win_input.py`：客户区坐标到屏幕坐标的换算、高层拖拽与文本输入，提供 `iter_linear_drag_points()` 等轨迹工具供 capture 模块复用。
   - `subprocess_runner.py`：用于运行子进程（如外部辅助脚本）的工具。

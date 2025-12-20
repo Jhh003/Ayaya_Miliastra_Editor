@@ -82,6 +82,23 @@ class TemplateMatchDebugInfo:
 _TEMPLATE_CACHE: Dict[str, Dict[str, np.ndarray]] = {}
 
 
+def _cv2_imread_unicode_safe(image_path: Path, flags: int) -> Optional[np.ndarray]:
+    """使用 OpenCV 的 imdecode 读取图片，兼容 Windows 中文路径。"""
+    image_bytes = image_path.read_bytes()
+    image_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
+    decoded_image = cv2.imdecode(image_buffer, flags)
+    return decoded_image
+
+
+def _cv2_imwrite_unicode_safe(image_path: Path, image_matrix: np.ndarray) -> None:
+    """使用 OpenCV 的 imencode 写入图片，兼容 Windows 中文路径。"""
+    file_extension = str(image_path.suffix or ".png").lower()
+    success, encoded = cv2.imencode(file_extension, image_matrix)
+    if not bool(success):
+        raise ValueError(f"cv2.imencode 失败，无法写入：{image_path}")
+    image_path.write_bytes(encoded.tobytes())
+
+
 def _get_workspace_root_for_tools() -> Path:
     tools_dir = Path(__file__).resolve().parent
     return tools_dir.parent
@@ -101,15 +118,21 @@ def _get_debug_output_root_dir() -> Path:
 
 def _load_template_images(template_dir: str) -> Dict[str, np.ndarray]:
     templates: Dict[str, np.ndarray] = {}
-    if not os.path.exists(template_dir):
+    template_dir_path = Path(str(template_dir))
+    if not template_dir_path.exists():
         return templates
-    for filename in os.listdir(template_dir):
-        if filename.lower().endswith(".png"):
-            template_path = os.path.join(template_dir, filename)
-            template_image = cv2.imread(template_path, cv2.IMREAD_COLOR)
-            if template_image is not None:
-                template_name = os.path.splitext(filename)[0]
-                templates[template_name] = template_image
+    for template_file_path in sorted(
+        template_dir_path.iterdir(), key=lambda candidate_path: candidate_path.name.lower()
+    ):
+        if not template_file_path.is_file():
+            continue
+        if template_file_path.suffix.lower() != ".png":
+            continue
+        template_image = _cv2_imread_unicode_safe(template_file_path, cv2.IMREAD_COLOR)
+        if template_image is None:
+            continue
+        template_name = template_file_path.stem
+        templates[template_name] = template_image
     return templates
 
 
@@ -884,7 +907,6 @@ def _detect_rectangles_from_canvas(canvas_image: Image.Image) -> List[Dict]:
     debug_output_root_dir = _get_debug_output_root_dir()
     debug_steps_dir = debug_output_root_dir / "debug_steps"
     debug_steps_dir.mkdir(parents=True, exist_ok=True)
-    debug_dir = str(debug_steps_dir)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
 
     # 转换
@@ -900,10 +922,10 @@ def _detect_rectangles_from_canvas(canvas_image: Image.Image) -> List[Dict]:
     mask_white = ((saturation < 50) & (value > 150)).astype(np.uint8) * 255
 
     # 保存原始掩码
-    step1_path = os.path.join(debug_dir, f"{timestamp}_step1_color_mask_raw.png")
-    cv2.imwrite(step1_path, mask_colorful)
-    step2_path = os.path.join(debug_dir, f"{timestamp}_step2_white_mask_raw.png")
-    cv2.imwrite(step2_path, mask_white)
+    step1_path = debug_steps_dir / f"{timestamp}_step1_color_mask_raw.png"
+    _cv2_imwrite_unicode_safe(step1_path, mask_colorful)
+    step2_path = debug_steps_dir / f"{timestamp}_step2_white_mask_raw.png"
+    _cv2_imwrite_unicode_safe(step2_path, mask_white)
 
     # 形态学（分别处理后合并）
     kernel_close_color = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
@@ -911,19 +933,19 @@ def _detect_rectangles_from_canvas(canvas_image: Image.Image) -> List[Dict]:
     kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     mask_colorful = _apply_morphology_operations(mask_colorful, kernel_close_color, kernel_open, 2, 1)
     mask_white = _apply_morphology_operations(mask_white, kernel_close_white, kernel_open, 1, 1)
-    step3_path = os.path.join(debug_dir, f"{timestamp}_step3_color_mask_morphed.png")
-    cv2.imwrite(step3_path, mask_colorful)
-    step4_path = os.path.join(debug_dir, f"{timestamp}_step4_white_mask_morphed.png")
-    cv2.imwrite(step4_path, mask_white)
+    step3_path = debug_steps_dir / f"{timestamp}_step3_color_mask_morphed.png"
+    _cv2_imwrite_unicode_safe(step3_path, mask_colorful)
+    step4_path = debug_steps_dir / f"{timestamp}_step4_white_mask_morphed.png"
+    _cv2_imwrite_unicode_safe(step4_path, mask_white)
 
     mask_bright = cv2.bitwise_or(mask_colorful, mask_white)
-    step5_path = os.path.join(debug_dir, f"{timestamp}_step5_merged_mask.png")
-    cv2.imwrite(step5_path, mask_bright)
+    step5_path = debug_steps_dir / f"{timestamp}_step5_merged_mask.png"
+    _cv2_imwrite_unicode_safe(step5_path, mask_bright)
 
     # 直接进入双向扫描去飞线
     mask_filtered = mask_bright
-    step6_path = os.path.join(debug_dir, f"{timestamp}_step6_prescan_mask.png")
-    cv2.imwrite(step6_path, mask_filtered)
+    step6_path = debug_steps_dir / f"{timestamp}_step6_prescan_mask.png"
+    _cv2_imwrite_unicode_safe(step6_path, mask_filtered)
 
     # 垂直扫描：删除高度小于阈值的小连通域
     scan_width = 5
@@ -940,8 +962,8 @@ def _detect_rectangles_from_canvas(canvas_image: Image.Image) -> List[Dict]:
                 cv2.drawContours(strip, [contour], -1, 0, thickness=-1)
                 removed_pixels += int(cv2.contourArea(contour))
         mask_no_lines[:, x:x_end] = strip
-    step7_path = os.path.join(debug_dir, f"{timestamp}_step7_vertical_scan.png")
-    cv2.imwrite(step7_path, mask_no_lines)
+    step7_path = debug_steps_dir / f"{timestamp}_step7_vertical_scan.png"
+    _cv2_imwrite_unicode_safe(step7_path, mask_no_lines)
 
     # 水平扫描：删除宽度小于阈值的小连通域
     scan_height = 1
@@ -958,8 +980,8 @@ def _detect_rectangles_from_canvas(canvas_image: Image.Image) -> List[Dict]:
                 cv2.drawContours(strip, [contour], -1, 0, thickness=-1)
                 removed_pixels_h += int(cv2.contourArea(contour))
         mask_no_lines_h[y:y_end, :] = strip
-    step8_path = os.path.join(debug_dir, f"{timestamp}_step8_horizontal_scan.png")
-    cv2.imwrite(step8_path, mask_no_lines_h)
+    step8_path = debug_steps_dir / f"{timestamp}_step8_horizontal_scan.png"
+    _cv2_imwrite_unicode_safe(step8_path, mask_no_lines_h)
 
     # 最终轮廓
     contours, _ = cv2.findContours(mask_no_lines_h, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

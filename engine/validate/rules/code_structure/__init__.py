@@ -9,10 +9,13 @@ from .boolean_conditions import (
     IfBoolEqualityToConstRule,
     NoDirectLogicNotCallInIfRule,
 )
+from .event_handler_name import EventHandlerNameRule
 from .event_name import EventNameRule
 from .graph_vars_declaration import GraphVarsDeclarationRule
 from .literal_assignment import NoLiteralAssignmentRule
 from .local_var_initial_value import LocalVarInitialValueRule
+from .on_method_name import OnMethodNameRule
+from .unknown_node_call import UnknownNodeCallRule
 from .required_inputs import RequiredInputsRule
 from .signal_param_names import SignalParamNamesRule
 from .struct_name_required import StructNameRequiredRule
@@ -26,7 +29,10 @@ __all__ = [
     "VariadicMinArgsRule",
     "GraphVarsDeclarationRule",
     "NoLiteralAssignmentRule",
+    "UnknownNodeCallRule",
+    "EventHandlerNameRule",
     "EventNameRule",
+    "OnMethodNameRule",
     "TypeNameRule",
     "SignalParamNamesRule",
     "RequiredInputsRule",

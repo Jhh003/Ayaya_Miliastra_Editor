@@ -38,16 +38,38 @@ def bind_combat_panels(
 ) -> None:
     """绑定战斗预设相关右侧详情面板（玩家模板/职业/技能/道具）的信号。"""
 
-    def _persist_combat_and_index() -> None:
-        on_immediate_persist_requested(
-            combat_dirty=True,
-            index_dirty=True,
-        )
+    def _persist_player_template_preset() -> None:
+        template_id = getattr(player_editor_panel, "current_template_id", None)
+        if isinstance(template_id, str) and template_id:
+            on_immediate_persist_requested(
+                combat_preset_key=("player_template", template_id),
+            )
 
-    player_editor_panel.data_changed.connect(_persist_combat_and_index)
-    player_class_panel.data_changed.connect(_persist_combat_and_index)
-    skill_panel.data_changed.connect(_persist_combat_and_index)
-    item_panel.data_changed.connect(_persist_combat_and_index)
+    def _persist_player_class_preset() -> None:
+        class_id = getattr(player_class_panel, "current_class_id", None)
+        if isinstance(class_id, str) and class_id:
+            on_immediate_persist_requested(
+                combat_preset_key=("player_class", class_id),
+            )
+
+    def _persist_skill_preset() -> None:
+        skill_id = getattr(skill_panel, "current_skill_id", None)
+        if isinstance(skill_id, str) and skill_id:
+            on_immediate_persist_requested(
+                combat_preset_key=("skill", skill_id),
+            )
+
+    def _persist_item_preset() -> None:
+        item_id = getattr(item_panel, "current_item_id", None)
+        if isinstance(item_id, str) and item_id:
+            on_immediate_persist_requested(
+                combat_preset_key=("item", item_id),
+            )
+
+    player_editor_panel.data_changed.connect(_persist_player_template_preset)
+    player_class_panel.data_changed.connect(_persist_player_class_preset)
+    skill_panel.data_changed.connect(_persist_skill_preset)
+    item_panel.data_changed.connect(_persist_item_preset)
 
     connect_optional_signal(player_editor_panel, "graph_selected", on_player_editor_graph_selected)
     connect_optional_signal(player_class_panel, "graph_selected", on_player_editor_graph_selected)

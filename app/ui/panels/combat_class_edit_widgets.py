@@ -715,7 +715,9 @@ class CombatClassSkillsTabWidget(QtWidgets.QWidget):
         self.has_basic_attack_switch.setChecked(has_basic_attack)
         self.has_basic_attack_switch.blockSignals(False)
 
+        self.basic_attack_combo.blockSignals(True)
         self._set_combo_to_skill_id(self.basic_attack_combo, basic_attack_id)
+        self.basic_attack_combo.blockSignals(False)
 
         active_skills_raw = skills_section.get("active_skills", [])
         active_skill_ids: List[str] = []
@@ -791,10 +793,9 @@ class CombatClassSkillsTabWidget(QtWidgets.QWidget):
             combo.addItem("（未选择）", "")
             for display_text, skill_id in self._skill_options:
                 combo.addItem(display_text, skill_id)
-            combo.blockSignals(False)
-
             if current_id:
                 self._set_combo_to_skill_id(combo, current_id)
+            combo.blockSignals(False)
 
     def _set_combo_to_skill_id(self, combo: QtWidgets.QComboBox, skill_id: str) -> None:
         if not skill_id:

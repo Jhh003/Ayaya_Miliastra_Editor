@@ -74,6 +74,13 @@ class PackageViewSaveService:
             )
         did_write = did_write or saved_resources
 
+        if dirty_snapshot.combat_preset_keys:
+            saved_combat_presets = self._combat_presets_save_service.save_preset_resources(
+                package=package,
+                preset_keys=set(dirty_snapshot.combat_preset_keys),
+            )
+            did_write = did_write or saved_combat_presets
+
         if force_full or dirty_snapshot.combat_dirty:
             self._combat_presets_save_service.sync_to_index(
                 package=package,

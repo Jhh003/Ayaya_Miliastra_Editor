@@ -9,13 +9,16 @@
 
 ## 当前状态
 - 图库页已切换为只读浏览模式：文件夹树与卡片列表仅承担筛选、定位与跳转，节点图的新增/重命名/删除及变量写回入口已关闭，归属写回统一由右侧图属性面板处理。
-- `FolderTreeMixin` 维护 `(graph_type, folder_path)` 的展开快照按需重建树；`GraphListMixin` 依赖 `_graph_metadata_cache` 与卡片快照做增量刷新，避免大图量下的重建抖动。
+- `FolderTreeMixin` 维护 `(graph_type, folder_path)` 的展开快照按需重建树；刷新时复用同一次 `get_all_graph_folders()` 快照构建树，避免重复读取导致的短暂不一致与性能抖动。
+- `GraphListMixin` 依赖 `_graph_metadata_cache` 与卡片快照做增量刷新，避免大图量下的重建抖动。
 - `GraphListMixin` 在刷新列表时会基于“资源库指纹 + 当前视图上下文 + 筛选条件”生成刷新签名；签名未变时跳过全量枚举与排序，复用现有卡片与选中状态，降低跨页面切换时的卡顿。
+- 当刷新后“原选中图已不在当前列表中”（外部删除源文件、切换视图范围过滤掉该图等），`GraphListMixin` 会清空选中并 `emit graph_selected("")`，确保右侧图属性面板回到空状态，避免继续加载已不存在的源文件。
 - 支持 server/client 类型切换与全局/未分类/按包过滤，筛选结果与 `PackageIndex` 的索引保持一致。
 
 ## 注意事项
 - 事件过滤器：`FolderTreeMixin.eventFilter` 负责文件夹树拖拽，主组件需在 `_setup_ui` 中 `self.folder_tree.viewport().installEventFilter(self)`；若基类顺序因继承结构无法使 mixin 先于 `QWidget`，mix-in 内已回退调用 `QtWidgets.QWidget.eventFilter`，确保拖拽逻辑与默认处理兼容。
 - Folder tree 会保存“已展开的 `(graph_type, folder_path)` 集合”并对比快照，仅当文件夹结构发生变化时才真正重建；普通刷新会尽量恢复原有展开状态，而在切换节点图类型（`force=True`）时会忽略旧展开快照并自动展开整棵树，确保从 server 切到 client 时也能直接看到各级子文件夹。
+- 展开状态恢复时需确保“服务器/客户端”根节点保持展开：根节点不参与 key 快照（folder_path 为空），若根节点折叠会造成“只有根目录、子文件夹都不见了”的错觉。
 - 异常处理：遵循 UI 目录约定，不使用 try/except；异常直接抛出。确认/警告等需要用户决策的提示统一通过标准对话框或 `ConfirmDialogMixin` 处理，而文件夹删除成功等非关键状态反馈则使用 `ToastNotification.show_message()` 在窗口右上角短暂展示，不打断后续操作。
 - 上下文菜单：统一使用 `app.ui.foundation.context_menu_builder.ContextMenuBuilder`，不要内联 QSS。
 - 资源读写：仅通过 `ResourceManager` 读写图与文件夹信息；图列表加载使用 `load_graph_metadata()` 的轻量路径，避免执行节点图代码；对节点图包归属的修改统一委托右侧图属性面板中的 `PackageMembershipSelector` 和 `PackageIndexManager`，不在本子包中直接改写索引文件。
