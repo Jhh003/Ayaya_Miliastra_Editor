@@ -46,6 +46,7 @@ class FolderTreeMixin:
             return
 
         self.folder_tree.clear()
+        created_roots: list[QtWidgets.QTreeWidgetItem] = []
 
         if self.current_graph_type == "all":
             server_root = QtWidgets.QTreeWidgetItem(self.folder_tree)
@@ -56,25 +57,35 @@ class FolderTreeMixin:
             client_root.setText(0, "🔶 客户端节点图")
             client_root.setData(0, QtCore.Qt.ItemDataRole.UserRole, ("client", ""))
 
-            self._add_folders_to_tree(server_root, "server")
-            self._add_folders_to_tree(client_root, "client")
+            self._add_folders_to_tree(server_root, "server", folders_snapshot)
+            self._add_folders_to_tree(client_root, "client", folders_snapshot)
+            created_roots.extend([server_root, client_root])
         else:
             root_name = "🔷 服务器节点图" if self.current_graph_type == "server" else "🔶 客户端节点图"
             root = QtWidgets.QTreeWidgetItem(self.folder_tree)
             root.setText(0, root_name)
             root.setData(0, QtCore.Qt.ItemDataRole.UserRole, (self.current_graph_type, ""))
-            self._add_folders_to_tree(root, self.current_graph_type)
+            self._add_folders_to_tree(root, self.current_graph_type, folders_snapshot)
+            created_roots.append(root)
 
         self._folder_tree_snapshot = snapshot_key
         if (not force) and expanded_state:
             restore_expanded_paths(self.folder_tree, expanded_state, self._folder_tree_item_key)
+            # 根节点（服务器/客户端）不参与 expanded_state（其 key 为 None）。
+            # 若仅恢复子节点展开状态而根节点保持折叠，会导致“看起来只有根目录”的错觉。
+            for root_item in created_roots:
+                root_item.setExpanded(True)
         else:
             self.folder_tree.expandAll()
 
-    def _add_folders_to_tree(self, parent_item: QtWidgets.QTreeWidgetItem, graph_type: str) -> None:
+    def _add_folders_to_tree(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        graph_type: str,
+        folders_snapshot: dict,
+    ) -> None:
         """添加文件夹到树"""
-        folders = self.resource_manager.get_all_graph_folders()
-        type_folders = folders.get(graph_type, [])
+        type_folders = folders_snapshot.get(graph_type, [])
         builder = FolderTreeBuilder(
             data_factory=lambda path, gt=graph_type: (gt, path),
         )

@@ -111,6 +111,7 @@ class GraphLibraryWidget(
 
     def reload(self) -> None:
         """在当前上下文下全量刷新节点图列表并尽量恢复选中。"""
+        self._force_invalidate_graph_library_view_cache()
         self._refresh_folder_tree()
         self._refresh_graph_list()
         if self.isVisible():
@@ -323,6 +324,43 @@ class GraphLibraryWidget(
 
 
     # === 对外API ===
+
+    def refresh(self) -> None:
+        """刷新节点图库。
+
+        设计目标：
+        - 当节点图/复合节点/管理配置等资源被外部工具（或手动）修改后，
+          允许用户在节点图库页面内直接触发一次“全局资源库刷新”，避免
+          UI 仍保留已不存在的条目并提示源文件缺失。
+        - 若当前运行在主窗口上下文：委托主窗口的 `refresh_resource_library()`，
+          由 ResourceRefreshService 统一负责缓存失效 + 索引重建 + UI 上下文刷新。
+        - 若运行在独立对话框等上下文：本地执行最小闭环（清缓存 + 重建索引 + 强制 reload）。
+        """
+        window = self.window()
+        refresh_resource_library = getattr(window, "refresh_resource_library", None) if window else None
+        if callable(refresh_resource_library):
+            refresh_resource_library()
+            return
+
+        # 独立上下文：尽量与主窗口刷新链路保持一致（但不依赖主窗口服务）。
+        self.resource_manager.clear_all_caches()
+        self.resource_manager.rebuild_index()
+        self.reload()
+
+    def _force_invalidate_graph_library_view_cache(self) -> None:
+        """强制失效节点图库 UI 侧快照缓存，确保 reload 不被签名短路。"""
+        # GraphListMixin：清理元数据缓存与“刷新签名”，强制重新枚举/排序/增量刷新卡片。
+        self._invalidate_graph_metadata()
+        setattr(self, "__graph_list_refresh_signature", None)
+
+        # FolderTreeMixin：强制对比快照时视为“结构可能变化”，允许重建树并恢复展开状态。
+        setattr(self, "_folder_tree_snapshot", None)
+
+        # 引用追踪缓存同样以资源库指纹为失效条件；reload 语义上需要“看见最新磁盘”。
+        if hasattr(self, "reference_tracker") and self.reference_tracker is not None:
+            invalidate_cache = getattr(self.reference_tracker, "invalidate_reference_cache", None)
+            if callable(invalidate_cache):
+                invalidate_cache()
 
     
 

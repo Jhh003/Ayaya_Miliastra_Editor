@@ -113,12 +113,48 @@ def validate_file(file_path: Path) -> Tuple[bool, List[str], List[str]]:
     return (len(errors) == 0), errors, warnings
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_FALLBACK_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _looks_like_workspace_root(candidate: Path) -> bool:
+    """判断 candidate 是否像是“仓库工作区根目录”。
+
+    约定（本仓库）：
+    - 根目录下存在 `constraints.txt`
+    - 根目录下存在 `engine/` 目录
+    """
+
+    if not isinstance(candidate, Path):
+        return False
+    return (candidate / "constraints.txt").is_file() and (candidate / "engine").is_dir()
+
+
+def _infer_workspace_root_for_validate_file(target_files: List[Path]) -> Path:
+    """为 validate_file 的“直接运行节点图脚本”场景推断 workspace_root。
+
+    优先从被校验文件路径向上寻找仓库根目录；找不到时再从当前模块路径向上寻找；
+    最终兜底为引擎子目录（保持旧行为，确保最少不崩）。
+    """
+
+    search_roots: List[Path] = []
+    for file_path in target_files:
+        if isinstance(file_path, Path):
+            search_roots.append(file_path.resolve())
+    search_roots.append(Path(__file__).resolve())
+
+    for start in search_roots:
+        cursor = start if start.is_dir() else start.parent
+        for candidate in (cursor, *cursor.parents):
+            if _looks_like_workspace_root(candidate):
+                return candidate
+
+    return _DEFAULT_FALLBACK_ROOT
 
 
 def _collect_issues_for_files(target_files: List[Path]) -> Dict[str, Dict[str, List[str]]]:
     """运行底层验证并聚合成“文件 → (错误/警告列表)”的映射。"""
-    absolute_targets = {str(path.resolve()) for path in target_files}
+    resolved_target_files: List[Path] = [path.resolve() for path in target_files]
+    absolute_targets = {str(path) for path in resolved_target_files}
     issues: Dict[str, Dict[str, List[str]]] = {
         target: {"errors": [], "warnings": []} for target in absolute_targets
     }
@@ -128,12 +164,16 @@ def _collect_issues_for_files(target_files: List[Path]) -> Dict[str, Dict[str, L
     # 兼容“直接运行节点图文件”的自检场景：
     # 节点图校验会触发布局计算，而布局层需要从 settings 读取 workspace_root。
     # CLI/GUI 启动入口会提前调用 settings.set_config_path(workspace_root)，但直接 python xxx.py 时不会。
-    # 这里用引擎侧能确定的项目根目录作为 workspace_root，保证 validate_file 可直接使用。
-    settings.set_config_path(_PROJECT_ROOT)
+    # 这里会尽量从被校验文件向上推断仓库根目录，并在必要时注入到 settings。
+    current_workspace = getattr(settings.__class__, "_workspace_root", None)
+    workspace_root = current_workspace if isinstance(current_workspace, Path) else None
+    if workspace_root is None or (not _looks_like_workspace_root(workspace_root)):
+        workspace_root = _infer_workspace_root_for_validate_file(resolved_target_files)
+        settings.set_config_path(workspace_root)
 
     from engine.validate.api import validate_files
 
-    report = validate_files(list(target_files), _PROJECT_ROOT, strict_entity_wire_only=False)
+    report = validate_files(resolved_target_files, workspace_root, strict_entity_wire_only=False)
     for issue in report.issues:
         issue_file = issue.file or ""
         if issue_file in issues:

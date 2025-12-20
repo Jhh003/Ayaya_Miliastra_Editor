@@ -16,6 +16,7 @@
 - 推荐优先使用 `panel_dict_utils.ensure_nested_dict/ensure_nested_list` 处理多级嵌套段落初始化，避免在面板内手写“逐级判断类型并写回默认 dict/list”的样板逻辑。
 - 装备词条面板的“选择属性”使用不可编辑下拉框：预置常用属性项（生命值/攻击力/防御力修正与调整率、各元素抗性与增伤调整率、暴击相关、恢复效果等），默认有“请选择属性”占位，若加载到列表外的旧值会临时加入下拉供选择与保存。
 - 战斗预设玩家模板面板通过 `app.runtime.services.json_cache_service.JsonCacheService` 在 `app/runtime/cache/player_ingame_save_selection.json` 记忆最近的局内存档模板选择（按玩家模板 ID 作为 KV key 存储），优先读取模板 metadata，确保下次打开"自定义变量_局内存档变量"时沿用上次选择；右侧局内存档变量表格基于局内存档管理模板 `entries` 中的 `struct_id` 与 `max_length` 为每个 `1_chip_*` 槽位展示结构体名称与最大条目数，模板概要区域仅保留“当前模板 + 映射数量”等整体说明，具体的“最大条目数”信息以列表形式直接在表格列中呈现，便于按行对照。
+- 玩家模板面板的“所属存档”行使用面板内的反向索引缓存（按 packages 列表签名失效），避免在频繁切换玩家模板选中时反复读取所有存档索引文件导致卡顿。
 - 玩家模板自定义变量匹配逻辑（`_get_external_player_level_variable_payloads`）：优先按 `variable_file_id`（即变量文件的 `VARIABLE_FILE_ID` 常量）匹配，兼容按完整路径或文件名（`source_stem`）匹配。
 - 玩家模板自定义变量表格中的只读结构体字段会显示"查看"按钮，点击后通过 `_on_struct_view_requested` 弹出 `StructViewerDialog` 以只读模式展示结构体定义详情。
 - 界面控件组相关面板（布局、模板库等）中的新增/编辑对话框统一复用 `BaseDialog`/`FormDialog` 及主题样式，通过表单布局收集输入字段。
@@ -28,5 +29,6 @@
 - 面板需要文本/枚举/整数输入弹窗时，统一从 `app.ui.foundation` 顶层导入 `prompt_text/prompt_item/prompt_int`（实现位于 `ui/foundation/input_dialogs.py`）；`dialog_utils.py` 仅用于消息框类提示。
 - 组件仅操作传入的资源实例，不复制或缓存独立副本，确保多视图下编辑同一资源时状态一致。
 - 布局保持向上对齐：滚动容器内的表单/编辑器在内部布局添加补充伸缩或 alignment，避免内容在可用高度内居中分散。
+- 战斗预设类面板（职业/技能/道具等）在 `set_context/_load_fields` 中必须严格 `blockSignals(True/False)` 包裹所有会触发 `currentIndexChanged/valueChanged/textChanged` 的控件赋值，避免“加载数据即触发 data_changed → 误保存 → 卡顿”的链路。
 - 布局面板中的“添加界面控件”对话框继承 `BaseDialog`，复用统一的主题样式与按钮。
 - 左侧搜索输入（`panel_search_support.SidebarSearchController`）统一套用 ThemeManager 的输入样式，保证在未显式套用 Panel 样式的父容器中也维持主题一致的输入外观。

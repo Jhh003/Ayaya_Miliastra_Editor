@@ -109,6 +109,14 @@ class PackageController(QtCore.QObject):
     def mark_combat_dirty(self) -> None:
         self.dirty_state.combat_dirty = True
 
+    def mark_combat_preset_dirty(self, section_key: Optional[str], item_id: Optional[str]) -> None:
+        """标记某个战斗预设资源为脏（用于按条目增量写回资源文件）。"""
+        if not isinstance(section_key, str) or not section_key:
+            return
+        if not isinstance(item_id, str) or not item_id:
+            return
+        self.dirty_state.combat_preset_keys.add((section_key, item_id))
+
     def mark_signals_dirty(self) -> None:
         self.dirty_state.signals_dirty = True
 
@@ -124,13 +132,12 @@ class PackageController(QtCore.QObject):
                 self.dirty_state.level_entity_dirty = True
 
     def _build_full_dirty_snapshot(self) -> PackageDirtyState:
-        snapshot = PackageDirtyState(
-            graph_dirty=True,
-            combat_dirty=True,
-            signals_dirty=True,
-            index_dirty=True,
-            full_management_sync=True,
-        )
+        snapshot = self.dirty_state.snapshot()
+        snapshot.graph_dirty = True
+        snapshot.combat_dirty = True
+        snapshot.signals_dirty = True
+        snapshot.index_dirty = True
+        snapshot.full_management_sync = True
 
         if self.get_current_graph_container and self.get_property_panel_object_type:
             container = self.get_current_graph_container()
@@ -167,9 +174,10 @@ class PackageController(QtCore.QObject):
     
     def load_package(self, package_id: str) -> None:
         """加载存档或全局视图"""
-        # 保存当前存档
-        if self.current_package and self.current_package_id and self.current_package_id != "global_view":
-            self.save_package()
+        # 切换存档前：优先 flush 右侧属性面板中的去抖缓冲，再按脏块增量落盘。
+        # 约定：若无任何本地改动则不写盘，避免无意义覆盖与 I/O 卡顿。
+        if self.current_package and self.current_package_id:
+            self.save_now()
         self.reset_dirty_state()
         
         # 检查是否是特殊浏览模式
@@ -232,6 +240,18 @@ class PackageController(QtCore.QObject):
         """仅保存已标记的脏块。"""
         self._save_internal(force_full=False)
 
+    def save_now(self) -> None:
+        """保存当前脏块（用户显式保存/切换存档等入口使用）。
+
+        约定：
+        - 先 flush 右侧属性面板中使用去抖写回的编辑缓冲（名称/描述/GUID 等）；
+        - 再按脏块增量保存（无脏块则不写盘）。
+        """
+        flush_callback = getattr(self, "flush_current_resource_panel", None)
+        if callable(flush_callback):
+            flush_callback()
+        self.save_dirty_blocks()
+
     def _save_internal(self, *, force_full: bool) -> None:
         """按需保存当前存档或视图。"""
         dirty_snapshot = (
@@ -266,7 +286,7 @@ class PackageController(QtCore.QObject):
             )
             return
         
-        self.save_package()
+        self.save_now()
         
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             parent_widget, "导出存档",

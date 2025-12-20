@@ -8,6 +8,8 @@
 - 复合节点/普通节点图的规则集选择统一由 `engine.nodes.composite_file_policy.is_composite_definition_file` 判定（默认复合节点文件名 `composite_*.py`），避免通过目录名推断导致入口间漂移。
 - `engine.validate.node_graph_validator.validate_file` 支持“直接运行单个节点图文件”的自检用法：会自动调用 `settings.set_config_path(workspace_root)` 注入工作区根目录，避免布局阶段因 `Settings._workspace_root` 未设置而崩溃。
 - 节点图代码侧的静态规则集中在 `rules/code_*.py`，覆盖语法/结构/布尔条件/变量声明/端口类型/类型名，以及“发送信号调用所用参数名必须与信号定义一致”“Graph Code 中【信号名】参数必须使用信号名称而非 ID”等约束，并依赖节点库索引、信号/结构体 Schema 视图与 AST 工具进行分析。
+- 节点图代码侧新增“内置事件回调命名”校验：当 `register_event_handler` 注册的是内置事件时，回调必须为 `on_<事件名>`（严格一致）；信号事件不强制回调名。
+- 节点图代码侧新增 `on_XXX` 方法名严格校验：只要方法名以 `on_` 开头，`XXX` 必须是内置事件名或已定义信号名/ID（即使未注册也会报错），防止伪事件入口潜伏。
 - 节点图代码侧额外提供“节点调用必填入参”校验：基于节点库静态输入端口清单，禁止 Graph Code 漏传必填端口（流程端口与变参占位端口除外），减少运行期静默失败。
 - 代码可读性相关的规则除 error 级硬约束外，也提供若干 warning：例如事件节点多流程出口提示、以及 `if 是否相等(布尔值, True/False)` 的冗余比较提示，用于帮助开发者在不阻断流程的前提下发现 UI 可读性风险点。
 - 针对离线/简化“拉取式执行器”新增风险提示规则：当【设置自定义变量】写入后，后续流程节点仍依赖同一个【获取自定义变量】节点实例时，报告 `CODE_PULL_EVAL_REEVAL_AFTER_WRITE` warning，提醒可能因重复求值导致条件/数值偏移；推荐在执行器层实现“同一 node_id 单次事件流只求值一次”的输出缓存语义。
@@ -21,6 +23,7 @@
 - `NoListDictLiteralRule` 对所有节点图（包括复合节点）生效，禁止使用 `[]` 或 `{}` 字面量定义列表/字典，必须使用【拼装列表】【建立字典】等节点代替。
 - `MatchCaseLiteralPatternRule` 对所有节点图（包括复合节点）生效，限制 `match/case` 的 `case` 模式只能使用字面量（或字面量 `|` 组合）与 `_` 通配，避免出现 `case self.xxx`/`case 变量名` 等解析器无法静态处理的写法。
 - Graph Code 的可读性规则持续演进：除“if 条件必须为布尔来源、禁止内联 Python 比较”等基础约束外，新增规则禁止在 `if` 条件中直接调用 `逻辑非运算(...)`，要求使用正向条件（例如 `if 条件: pass else: return`）让主流程从“是”分支接续。
+- 节点图代码侧新增“未知节点函数名”校验：当代码出现 `某函数(self.game, ...)` 形态但该函数名不在节点库中，会直接报错，避免拼写错误/不存在节点名在校验阶段被静默放过。
 
 ## 注意事项
 - 允许依赖：`engine/nodes`、`engine/graph`、`engine/utils`、`engine/configs`；禁止引入 `plugins/*`、`app/*`、`assets/*`、`core/*` 等上层模块。

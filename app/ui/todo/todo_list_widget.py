@@ -22,7 +22,7 @@
 - 不要在此文件中硬编码颜色值或魔法数字
 """
 
-from PyQt6 import QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import Dict, List, Optional
 
@@ -247,6 +247,12 @@ class TodoListWidget(QtWidgets.QWidget):
                 splitter.setCollapsible(1, True)
                 splitter.setHandleWidth(2)
                 splitter.setSizes([260, 0])
+
+            # 进入执行精简模式：若任务清单页当前在前台，则刷新一次当前选中项，
+            # 让执行监控面板的“执行/执行剩余”按钮立刻获得正确文案与信号路由（无需用户重新点选）。
+            self._refresh_current_selection_view_for_execution_mode()
+            # 切换精简模式时，QTreeWidget 的滚动位置可能被重置到顶部；这里确保回到“当前步骤”。
+            QtCore.QTimer.singleShot(0, self._scroll_tree_to_current_item)
             return
 
         # restore
@@ -275,6 +281,69 @@ class TodoListWidget(QtWidgets.QWidget):
                 splitter.setSizes(splitter_sizes)
 
         self._execution_compact_saved_state = None
+
+        # 退出执行精简模式：若任务清单页当前在前台，则刷新一次当前选中项，
+        # 以恢复右侧详情/预览（含共享画布）到“正常模式”的默认展示策略。
+        self._refresh_current_selection_view_for_execution_mode()
+        QtCore.QTimer.singleShot(0, self._scroll_tree_to_current_item)
+
+    def _scroll_tree_to_current_item(self) -> None:
+        """确保左侧步骤树滚动到当前选中项（用于精简模式切换后避免回到顶部）。"""
+        if not self._is_active_todo_page():
+            return
+        if not hasattr(self, "tree"):
+            return
+        current_item = self.tree.currentItem()
+        if current_item is None:
+            return
+        self.tree.scrollToItem(
+            current_item,
+            QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter,
+        )
+
+    def _is_active_todo_page(self) -> bool:
+        """判断任务清单页是否为当前中央堆叠页。
+
+        约定：只有当本页在前台时，才允许触发 show_detail/预览加载，避免误把共享 GraphView 从编辑器页“偷走”。
+        """
+        main_window = getattr(self, "main_window", None)
+        if main_window is None:
+            return False
+        central_stack = getattr(main_window, "central_stack", None)
+        if central_stack is None or not hasattr(central_stack, "currentWidget"):
+            return False
+        return central_stack.currentWidget() is self
+
+    def _refresh_current_selection_view_for_execution_mode(self) -> None:
+        """在精简模式切换时刷新当前选中项的右侧视图与执行入口状态。
+
+        - 仅在任务清单页处于前台时执行，避免影响图编辑器页的共享画布归属。
+        - 不吞异常：若内部依赖未就绪，直接让错误暴露出来便于定位初始化顺序问题。
+        """
+        if not self._is_active_todo_page():
+            return
+        orchestrator = getattr(self, "_orchestrator", None)
+        if orchestrator is None:
+            return
+        tree_manager = getattr(self, "tree_manager", None)
+        if tree_manager is None:
+            return
+
+        current_item = self.tree.currentItem() if hasattr(self, "tree") else None
+        todo_id = ""
+        if current_item is not None:
+            raw_id = current_item.data(0, Qt.ItemDataRole.UserRole)
+            todo_id = str(raw_id or "")
+        if not todo_id:
+            todo_id = str(getattr(self, "current_todo_id", "") or "")
+        if not todo_id:
+            return
+
+        todo = tree_manager.todo_map.get(todo_id)
+        if todo is None:
+            return
+
+        orchestrator.show_detail(todo)
     
     def _apply_styles(self):
         """应用现代化样式表"""

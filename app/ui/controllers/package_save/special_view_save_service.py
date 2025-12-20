@@ -14,6 +14,7 @@ from engine.resources.unclassified_resource_view import UnclassifiedResourceView
 from app.ui.controllers.package_dirty_state import PackageDirtyState
 
 from .fingerprint_baseline_service import FingerprintBaselineService
+from .combat_presets_save_service import CombatPresetsSaveService
 from .resource_container_save_service import ResourceContainerSaveService
 from app.ui.management.section_registry import MANAGEMENT_RESOURCE_BINDINGS
 
@@ -31,6 +32,7 @@ class SpecialViewSaveService:
         self._resource_manager = resource_manager
         self._fingerprint_baseline_service = fingerprint_baseline_service
         self._resource_container_saver = resource_container_saver
+        self._combat_presets_save_service = CombatPresetsSaveService(resource_manager)
         self._get_current_graph_container = get_current_graph_container
         self._get_property_panel_object_type = get_property_panel_object_type
 
@@ -66,9 +68,14 @@ class SpecialViewSaveService:
             )
             did_write = did_write or resource_saved
 
-        if force_full or dirty_snapshot.combat_dirty:
-            self._save_combat_presets_for_special_view(current_package_id, current_package)
-            did_write = True
+        if dirty_snapshot.combat_preset_keys:
+            did_write = (
+                self._combat_presets_save_service.save_preset_resources(
+                    package=current_package,
+                    preset_keys=set(dirty_snapshot.combat_preset_keys),
+                )
+                or did_write
+            )
 
         if force_full or dirty_snapshot.full_management_sync or dirty_snapshot.management_keys:
             allowed_keys = (
@@ -111,51 +118,6 @@ class SpecialViewSaveService:
             self._get_property_panel_object_type,
             verbose=True,
         )
-
-    def _save_combat_presets_for_special_view(self, current_package_id: str | None, package: object) -> None:
-        """在全局视图/未分类视图下，将战斗预设视图模型写回资源库。"""
-        if not isinstance(package, (GlobalResourceView, UnclassifiedResourceView)):
-            return
-
-        combat_presets_view = getattr(package, "combat_presets", None)
-        if combat_presets_view is None:
-            return
-
-        bucket_definitions = [
-            ("player_templates", ResourceType.PLAYER_TEMPLATE, "template_id"),
-            ("player_classes", ResourceType.PLAYER_CLASS, "class_id"),
-            ("unit_statuses", ResourceType.UNIT_STATUS, "status_id"),
-            ("skills", ResourceType.SKILL, "skill_id"),
-            ("projectiles", ResourceType.PROJECTILE, "projectile_id"),
-            ("items", ResourceType.ITEM, "item_id"),
-        ]
-
-        for bucket_key, resource_type, id_field in bucket_definitions:
-            bucket_mapping_any = getattr(combat_presets_view, bucket_key, None)
-            if not isinstance(bucket_mapping_any, dict):
-                continue
-
-            bucket_mapping = bucket_mapping_any
-            print(
-                "[COMBAT-PRESETS] special-view bucket 写回：",
-                f"mode={current_package_id!r}, bucket_key={bucket_key!r}, "
-                f"preset_count={len(bucket_mapping)}",
-            )
-
-            for preset_id, payload_any in bucket_mapping.items():
-                if not isinstance(preset_id, str) or not preset_id:
-                    continue
-                if not isinstance(payload_any, dict):
-                    continue
-
-                payload = payload_any
-                if "id" not in payload:
-                    payload["id"] = preset_id
-                specific_id_value = payload.get(id_field)
-                if not isinstance(specific_id_value, str) or not specific_id_value:
-                    payload[id_field] = preset_id
-
-                self._resource_manager.save_resource(resource_type, preset_id, payload)
 
     def _save_management_for_special_view(self, package: object, *, allowed_keys: set[str] | None) -> None:
         """在全局视图/未分类视图下，将管理页面编辑的配置直接写回管理配置资源。"""

@@ -3,6 +3,8 @@
 
 ## 当前状态
 - 已提供 `GraphLibraryWidget` 等节点图库页面，用于按类型、文件夹与存档视图浏览节点图，并通过只读模式限制节点图结构修改在代码侧完成。
+- `GraphLibraryWidget.reload()` 语义为“全量刷新”：会强制失效节点图库 UI 侧的签名/快照缓存，避免因资源库指纹基线未变化而被短路导致列表仍保留已被外部删除的条目。
+- `GraphLibraryWidget.refresh()` 作为页面内手动刷新入口：优先委托主窗口 `refresh_resource_library()` 执行统一的缓存失效与索引重建；在独立对话框上下文下回退为 `ResourceManager.clear_all_caches()+rebuild_index()+reload()` 的最小闭环。
 - 各资源库页面依赖 `engine/resources` 提供的资源视图（如 `PackageView`、`GlobalResourceView`、`UnclassifiedResourceView`），只负责 UI 层筛选、展示与跳转，不直接持久化资源数据。
 - 库页面通过 `LibraryPageMixin.notify_selection_state` 统一上报“是否有有效选中”，由主窗口通过 `right_panel.update_visibility()` 集中控制右侧容器的显示/收起，避免在各页面重复维护空选中处理或依赖主窗口私有方法名。
 - 管理配置库（`management_library_widget.py`）的“选中摘要”通过 `selection_summary_changed` 信号上报给主窗口，避免依赖 `window()` + 反射调用主窗口钩子方法名。

@@ -20,6 +20,10 @@
   - `test_signal_template_graph.py`：使用 `GraphCodeParser` 解析模板图 `模板示例_信号全类型_发送与监听`，验证监听信号事件节点的绑定信息与参数端口覆盖情况，确保 IR 与模板代码保持一致。
   - `test_semantic_metadata_single_writer.py`：回归“语义元数据单一写入阶段”约束，验证 `GraphSemanticPass` 对 `signal_bindings/struct_bindings` 的覆盖式生成与幂等性，并用 AST 扫描守卫禁止 Parser/IR/UI 多源写入回归。
   - `test_signal_code_param_names.py`：通过最小 Graph Code 片段直接调用 `validate_files`，验证【发送信号】在代码层面使用的参数名必须存在于信号定义中，额外参数名会作为错误被报告，合法参数名不会报错，并校验 Graph Code 中【信号名】参数必须使用信号名称而非 ID。
+  - `test_unknown_node_call_rule.py`：通过最小 Graph Code 片段直接调用 `validate_files`，验证形如 `未知函数(self.game, ...)` 的“疑似节点调用”会被识别并报告为错误，避免拼写错误或不存在节点名被静默跳过。
+  - `test_event_handler_name_rule.py`：通过最小 Graph Code 片段直接调用 `validate_files`，验证内置事件回调必须命名为 `on_<事件名>`（禁止 `on_定时器触发时_XXX` 这类追加后缀写法），并确认信号事件不强制回调名。
+  - `test_event_name_rule.py`：通过最小 Graph Code 片段直接调用 `validate_files`，验证事件名即使通过模块顶层字符串常量传入也必须可解析为内置事件或信号；未知事件名必须报错。
+  - `test_on_method_name_rule.py`：通过最小 Graph Code 片段直接调用 `validate_files`，验证只要定义了 `def on_XXX`，`XXX` 就必须为内置事件名或已定义信号名/ID（即使没有注册也会报错），防止伪事件入口潜伏。
   - `test_pull_eval_reevaluation_hazard_rule.py`：构造“简单误用 + 复杂控制流误用（for/match/if）+ 不触发对照”三类 Graph Code，验证校验器会对“读-改-写自定义变量后仍复用同一【获取自定义变量】节点实例”的模式报告 `CODE_PULL_EVAL_REEVAL_AFTER_WRITE` warning，并避免对安全写法产生误报。
   - `test_graph_variable_rules.py`：构造临时 Graph Code 覆盖图变量声明缺失与 GRAPH_VARIABLES 中类型非法的分支，并额外验证 GRAPH_VARIABLES 默认值中包含负数字面量（如 `-1.0`）时元数据提取结果正确，确保代码级声明成为唯一的变量与类型校验来源。
   - `test_type_registry_alignment.py`：回归“类型体系单一事实来源”约束，确保变量类型清单、结构体字段允许类型、验证层与配置层的 datatype_rules、端口常量与别名字典解析等均与 `engine/type_registry.py` 对齐，防止新增/调整类型时出现跨模块漂移。
@@ -38,6 +42,7 @@
   - `ui/test_save_conflict_policy.py`：回归保存冲突策略（expected_mtime + 覆盖开关），对齐 VSCode 等编辑器的“外部修改保护”。
   - `common/test_in_memory_graph_payload_cache_contract.py`：回归 `app.common.in_memory_graph_payload_cache` 的 cache_key 规则、detail_info 的 `graph_data/graph_data_key` 解析优先级，以及按图/按图根失效语义，避免任务清单预览/执行链路的缓存一致性回退。
   - `automation/test_executor_protocol_contract.py`：对 `EditorExecutorProtocol`/`ViewportController` 的关键方法做反射级签名一致性检查，并验证关键模块使用协议类型注解，避免跨模块回退到具体实现类导致耦合膨胀。
+- 自动化截图 ROI 边界回归：`test_roi_config_bounds.py` 验证 `app.automation.capture.roi_config.get_region_rect` 对派生 ROI（如“节点图缩放区域”）返回的矩形始终在图像范围内，避免识别框越界与 OCR 空图问题。
 - 资源索引命名策略回归：`test_resource_name_filename_sync_policy.py` 覆盖“扫描阶段是否允许将文件名回写到 JSON.name”的策略边界，确保默认缓存文件名策略下 UI 改名不会被索引扫描回滚；同时对“保存时以 name 驱动物理文件名”的类型保留同步能力。
 - 块间排版（块与块之间）居中：`test_block_vertical_centering.py` 直接构造 `LayoutBlock` 与父子关系，验证 `BlockPositioningEngine` 在“多父合流 / 多子分叉”场景下能把目标块放在邻居块组的垂直中间，并避免因同列无约束大块而把应居中的块顶下去。
   - 同文件额外包含“分叉子块列内顺序只能做局部互换”的回归用例：确保按端口顺序调整分叉子块时不会把同列的非兄弟块整体挤走（防止整列重排导致结构被破坏）。

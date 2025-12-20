@@ -27,6 +27,9 @@
 
 ## 子模块概览
 - 原子代码规则（M2 层）：`code_syntax_rules.py` / `code_structure_rules.py` / `code_quality_rules.py` 聚焦"禁止列表/字典字面量""布尔条件来源必须为布尔节点""禁止内联 if/算术""长连线/未使用结果/不可达代码""发送信号参数名必须来源于信号定义"等约束。`code_structure_rules.py` 为稳定入口，具体实现已按规则域拆分到 `code_structure/` 子包中；提供 `IfBooleanRule`、`EventNameRule`、`TypeNameRule`、`SignalParamNamesRule` 等核心规则；`NoListDictLiteralRule` 禁止在所有节点图（包括普通节点图和复合节点）中直接使用 `[]` 或 `{}` 字面量定义列表/字典，要求使用【拼装列表】【建立字典】等节点代替；`TypeNameRule` 同时理解基础类型名、列表类型名、结构体类型名以及形如"X-Y字典"或"X_Y字典"的字典别名类型，并要求别名中的键/值类型本身落在受支持的数据类型集合内；`NoLiteralAssignmentRule` 统一限制直接将 Python 字面量赋值给变量，并约定仅允许带中文类型注解的"命名常量"声明作为节点输入端的常量来源，同时禁止通过 `目标变量 = 命名常量` 这类别名赋值在 Graph Code 中间层复制常量值，鼓励使用【获取局部变量】/【设置局部变量】等节点管理运行时状态；`UnusedQueryOutputRule` 检测声明但未使用的变量（支持简单赋值 `x = 查询(...)` 和带类型注解的赋值 `x: "类型" = 查询(...)` 两种形式），级别为 error，避免产生无用的"孤立节点"。
+  - 事件相关：除 `EventNameRule` 校验事件名合法性外，`EventHandlerNameRule` 进一步要求“内置事件”的回调命名必须为 `on_<事件名>`（严格一致），避免 `on_定时器触发时_XXX` 这类看似新事件但实际复用同一内置事件的写法绕过规范；信号事件不强制回调名。
+  - `OnMethodNameRule` 对所有类结构节点图生效：只要方法名以 `on_` 开头，后缀就必须为内置事件名或已定义信号名/ID（即使未注册也会报错），防止伪事件入口潜伏。
+  - 额外包含“未知节点函数名”约束：当代码出现 `某函数(self.game, ...)` 形态但该函数名不在节点库中，会直接报错，避免拼写错误或不存在节点名被静默跳过。
 - `code_quality_rules.py` 额外包含拉取式执行器风险提示 `PullEvalReevaluationHazardRule`（warning）：当【设置自定义变量】写入后，后续流程节点仍依赖同一个【获取自定义变量】节点实例时，报告 `CODE_PULL_EVAL_REEVAL_AFTER_WRITE`，用于提前暴露“重复求值导致条件/数值偏移”的易踩坑；规则会将跨块数据节点副本规约到 `original_node_id`，避免在 for/match 等多块结构中漏报。
 - 组合规则（M3 层）：`code_port_types_match.py`、`composite_types_nesting.py` 等模块在端口类型匹配、复合节点嵌套与泛型类型使用等方面补充更高层次的检查，其中端口类型匹配规则会结合节点库中声明的端口类型与枚举候选值，对 Graph Code 中的常量与变量类型进行约束校验。
   - 端口类型匹配会额外对基础算术节点（如加减乘除）的“左值/右值”执行语义级限制：禁止把“布尔值”当作数值参与算术运算，即便节点端口写成了“泛型”也会报错，避免类型语义被隐式滥用。

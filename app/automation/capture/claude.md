@@ -4,7 +4,7 @@
 # 当前状态
 ## 模块划分
 - **dpi_awareness.py** - DPI 感知：进程级 DPI 感知设置（Windows Per-Monitor DPI）
-- **roi_config.py** - 区域配置：统一定义所有识别区域（ROI - Region of Interest），支持基于比例的常规区域和基于锚点的派生区域；`clip_to_graph_region` / `clip_to_image_bounds` 提供基础裁剪能力；其中 `"节点图缩放区域"` 的派生尺寸会通过 `app.automation.vision.ui_profile_params` 依据 OCR 模板 profile 自动调整，避免不同分辨率/缩放下固定像素失真。
+- **roi_config.py** - 区域配置：统一定义所有识别区域（ROI - Region of Interest），支持基于比例的常规区域和基于锚点的派生区域；`clip_to_graph_region` / `clip_to_image_bounds` 提供基础裁剪能力；派生 ROI 在计算时会保证返回矩形完全落在截图范围内，避免越界导致 overlays 绘制到窗口外或 OCR 引入黑边；其中 `"节点图缩放区域"` 的派生尺寸会通过 `app.automation.vision.ui_profile_params` 依据 OCR 模板 profile 自动调整，避免不同分辨率/缩放下固定像素失真。
 - **roi_constraints.py** - 节点图 ROI 约束：统一封装“强制节点图区域”的裁剪/日志逻辑，供模板匹配与 OCR 共享，内部直接复用 `clip_to_graph_region` 计算交集。
 - **cache.py** - 缓存机制：提供 OCR 和模板匹配的 LRU 缓存，基于内容哈希避免重复计算
   - 提供 `enforce_graph_roi_context()` / `disable_graph_roi_context()` 上下文管理器，在“强制节点图 ROI”与“临时关闭强制 ROI”之间安全切换

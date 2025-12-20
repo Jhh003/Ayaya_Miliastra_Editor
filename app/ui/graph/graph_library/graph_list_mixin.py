@@ -216,6 +216,13 @@ class GraphListMixin:
             self.graph_cards[self.selected_graph_id].set_selected(True)
         elif desired_ids and self.isVisible():
             self._on_graph_card_clicked(desired_ids[0])
+        elif self.selected_graph_id:
+            # 刷新后原选中图已不在当前列表中（例如源文件被外部删除/视图范围切换导致不可见）：
+            # 清空选中并通知上层面板更新为空状态，避免右侧仍加载旧 graph_id 后提示“源文件不存在”。
+            self.selected_graph_id = None
+            self.graph_selected.emit("")
+            if hasattr(self, "notify_selection_state"):
+                self.notify_selection_state(False, context={"source": "graph"})
 
     def _sort_graphs(self, graph_list: List[dict]) -> List[dict]:
         """根据当前排序方式对节点图列表排序"""

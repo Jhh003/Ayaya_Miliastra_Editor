@@ -409,7 +409,11 @@ class UISetupMixin:
 
         # 保存
         save_action = QtGui.QAction("保存", self)
-        save_action.triggered.connect(self.package_controller.save_package)
+        # 统一保存语义：flush 去抖缓冲 + 按脏块增量保存（无改动则不写盘）
+        if hasattr(self.package_controller, "save_now"):
+            save_action.triggered.connect(self.package_controller.save_now)
+        else:
+            save_action.triggered.connect(self.package_controller.save_package)
         toolbar.addAction(save_action)
 
         toolbar.addSeparator()

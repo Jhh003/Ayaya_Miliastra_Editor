@@ -43,6 +43,50 @@ MIN_SCALE_RATIO = 1e-6
 FIXED_SCALE_RATIO = 1.0
 
 
+def _is_phase_correlation_motion_reasonable(
+    *,
+    estimated_dx: int,
+    estimated_dy: int,
+    expected_dx: int,
+    expected_dy: int,
+    pan_step_pixels: int,
+) -> bool:
+    """判断相位相关估计出的内容位移是否合理。
+
+    经验规则：
+    - 方向应与“预期内容位移”同向（点积为正）
+    - 幅度不应远大于预期幅度（考虑到噪声与 UI 抖动，允许一定比例误差）
+
+    该保护用于避免相位相关在纹理不足/遮挡/弹窗闪烁等情况下返回离谱位移，
+    从而导致 origin_node_pos（原点映射）快速漂移，进而引发节点/端口定位全面失效。
+    """
+    if expected_dx == 0 and expected_dy == 0:
+        return True
+
+    dot_value = int(estimated_dx) * int(expected_dx) + int(estimated_dy) * int(expected_dy)
+    if dot_value <= 0:
+        return False
+
+    expected_abs_max = max(abs(int(expected_dx)), abs(int(expected_dy)))
+    estimated_abs_max = max(abs(int(estimated_dx)), abs(int(estimated_dy)))
+    expected_len = (float(expected_dx) ** 2 + float(expected_dy) ** 2) ** 0.5
+    error_len = (
+        float(int(estimated_dx) - int(expected_dx)) ** 2
+        + float(int(estimated_dy) - int(expected_dy)) ** 2
+    ) ** 0.5
+
+    step = max(1, int(pan_step_pixels))
+    # 幅度容忍：绝对最大分量不超过 max(1.6*预期最大分量, 1.6*单步上限, 80px)
+    if estimated_abs_max > int(max(float(expected_abs_max) * 1.6, float(step) * 1.6, 80.0)):
+        return False
+
+    # 误差容忍：误差向量长度不超过 max(0.75*预期长度, 0.9*单步上限, 120px)
+    if error_len > float(max(float(expected_len) * 0.75, float(step) * 0.9, 120.0)):
+        return False
+
+    return True
+
+
 def _get_valid_scale_ratio(executor) -> float:
     if executor.scale_ratio is None:
         raise ValueError("坐标未校准，请先调用calibrate_coordinates()")
@@ -449,6 +493,24 @@ def ensure_program_point_visible(
             capture_after=lambda: editor_capture.capture_window(executor.window_title),
             roi=roi,
         )
+        if planned_non_zero:
+            expected_dx_int = int(expected_dx)
+            expected_dy_int = int(expected_dy)
+            if (dx_corr != 0 or dy_corr != 0) and not _is_phase_correlation_motion_reasonable(
+                estimated_dx=int(dx_corr),
+                estimated_dy=int(dy_corr),
+                expected_dx=expected_dx_int,
+                expected_dy=expected_dy_int,
+                pan_step_pixels=int(pan_step_pixels),
+            ):
+                executor.log(
+                    "[视口对齐] 相位相关位移异常："
+                    f"Δ=({int(dx_corr)},{int(dy_corr)}) 与预期≈({expected_dx_int},{expected_dy_int})不一致，"
+                    "将视为(0,0)以避免原点映射漂移",
+                    log_callback,
+                )
+                dx_corr = 0
+                dy_corr = 0
         # 当相位相关给出的位移为 (0,0) 而理论拖拽步长较大时，
         # 说明当前 ROI 内可能缺乏明显纹理（例如已拖入大面积空白区域），
         # 此时允许回退到基于拖拽向量的“预期内容位移”，避免坐标映射长期停滞。

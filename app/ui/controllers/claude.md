@@ -4,8 +4,8 @@
 控制器层，负责分离主窗口的业务逻辑，通过信号槽实现松耦合通信。每个控制器负责一个独立的功能域。
 
 ## 关键文件
-- `package_controller.py`：功能包生命周期管理（创建、加载、保存、导入、导出）。保存链条采用“脏块 + service 编排”：`PackageDirtyState` 记录图/模板/实例/战斗/管理/索引等脏块，提供 `save_dirty_blocks()` 按脏块增量落盘；保存前通过主窗口注入的回调 `flush_current_resource_panel` 刷新右侧属性面板中使用去抖写回的基础信息编辑内容（名称/描述/GUID 等），避免字段停留在 UI 缓冲区；保存事务编排与写盘细节已下沉到 `ui/controllers/package_save/`，控制器仅委托 `PackageSaveOrchestrator` 执行“指纹基线同步 → 可选 flush → special_view / package_view 分支 → 索引写盘/指纹刷新”的顺序化流程；窗口关闭阶段遵循“flush → 按脏块保存”的策略，避免外部资源刷新后被无意义覆盖。
-- `package_dirty_state.py`：存档脏块模型（保存链条的 UI 侧增量落盘入口使用）。
+- `package_controller.py`：功能包生命周期管理（创建、加载、保存、导入、导出）。保存链条采用“脏块 + service 编排”：`PackageDirtyState` 记录图/模板/实例/战斗/管理/索引等脏块，提供 `save_dirty_blocks()` 按脏块增量落盘；工具栏保存/切换存档等显式入口使用 `save_now()`（flush 右侧属性面板的去抖缓冲 → 按脏块增量保存；无改动则不写盘）减少无意义 I/O；保存事务编排与写盘细节已下沉到 `ui/controllers/package_save/`，控制器仅委托 `PackageSaveOrchestrator` 执行“指纹基线同步 → 可选 flush → special_view / package_view 分支 → 索引写盘/指纹刷新”的顺序化流程；窗口关闭阶段遵循“flush → 按脏块保存”的策略，避免外部资源刷新后被无意义覆盖。
+- `package_dirty_state.py`：存档脏块模型（保存链条的 UI 侧增量落盘入口使用）。战斗预设除 `combat_dirty`（索引引用需同步）外，还提供按条目粒度的 `combat_preset_keys` 用于仅保存被编辑的预设资源本体，避免全量写盘。
 - `package_save/`：存档保存链条 service（见该目录 `claude.md`）。
 - `graph_editor_controller.py`：节点图编辑核心逻辑（加载、保存、验证、节点添加）
   - 控制器仅负责信号转发与依赖注入：load/save/validate/auto_layout_prepare 等跨域链路已下沉到 `ui/controllers/graph_editor_flow/` 的纯流程 service，避免 God Object 继续膨胀。

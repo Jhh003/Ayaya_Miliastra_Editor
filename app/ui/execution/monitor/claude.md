@@ -133,7 +133,13 @@ ExecutionMonitorPanel 本体，仅负责组装与委托：
   - 返回字典包含所有控件：status_label、progress_label、step_context_label、screenshot_label、各按钮、log_text 等
   - 精简模式开关：`compact_mode_button`（QPushButton，checkable），由面板本体连接并驱动 UI 收敛与主窗口小窗化
   - 精简模式执行入口：`execute_button` / `execute_remaining_button`（仅在精简模式下显示），由任务清单编排层监听并路由到执行桥
-  - 布局：VBoxLayout 包含状态行、步骤上下文、截图、控制按钮行（暂停/继续/下一步/单步/终止/检查/定位镜头）、测试按钮行×3（识别类 / 模板类 / 截图类）、“拖拽测试”区（第一行显示当前中心与目标坐标输入，第二行放置“拖拽到坐标/向左拖拽/向右拖拽”按钮）、日志筛选行、日志文本
+  - 布局：VBoxLayout 包含状态行、步骤上下文与统一滚动容器
+    - 统一滚动容器（`monitorScrollArea`）：将截图/控制区/测试区/拖拽测试区/日志筛选/日志分割区统一放入同一个滚动区域，避免出现“上半区独立滚动条”的割裂体验；日志正文 QTextBrowser 仍保留自身滚动条用于长日志快速滚动
+    - 控制区：分组 + Grid，每行不超过 3 个主要按钮，减少窄宽度截字
+    - 测试区：不在面板内展开，改为“测试工具”菜单按钮弹出 QMenu，避免测试入口数量影响窗口最小尺寸
+    - 日志筛选：搜索与筛选拆两行（搜索行优先保证输入框可见）
+    - 日志分割区：`log_splitter`（执行事件表格 + 日志正文）允许子项折叠，子控件最小高度为 0，便于小窗场景压缩高度
+  - 文案与样式：按钮使用 `kind` 动态属性区分 `primary/secondary/danger`；对 disabled 状态提供统一置灰样式，保证按钮仅在实际可用时呈现“正常颜色”
   - 初始按钮状态：暂停/继续/下一步/终止默认禁用，单步复选框启用
 - `_apply_compact_controls_style(parent)`：应用紧凑化控件样式（按钮 font-size:11px、padding:2px 8px；复选框 font-size:11px）
 - 日志文本：日志正文 QTextBrowser 使用等宽字体（通过 `app.ui.foundation.fonts` 统一选择），避免硬编码 `Consolas` 等平台字体名。
@@ -186,6 +192,8 @@ from app.ui.execution import ExecutionMonitorPanel
   - `clear_history()`：清空历史记录（开启新监控会话时调用）
   - `backfill_recent_empty_titles()`：将末尾连续的空标题历史项回填为当前可显示标题
   - `eventFilter(obj, event)`：处理双击放大预览事件
+- 缩放自适应：监听 `screenshot_label` 的 `Resize` 事件，基于 `_last_full_pixmap` 重新按当前控件尺寸缩放，避免用户拖拽缩窄监控面板时画面被裁剪
+  - 拖拽过程中采用 `FastTransformation` 保证跟手；停止拖拽后 debounce 补一次 `SmoothTransformation`，兼顾性能与清晰度
 - 状态维护：
   - `_last_full_pixmap`：最近一次的完整画面（用于放大预览）
   - `_current_run_images`：当前运行期的截图历史（原始尺寸，已叠加绘制）
@@ -224,7 +232,7 @@ from app.ui.execution import ExecutionMonitorPanel
   - `stop_execution()`：停止执行（禁用所有控制按钮）
   - `request_pause()`：请求暂停（可从快捷键调用）
   - `wait_if_paused()`：等待（阻塞），直到不再暂停
-  - `is_execution_allowed()`：检查是否允许执行
+  - `is_execution_allowed()`：检查是否允许继续执行（未终止）；暂停由 `wait_if_paused()` 负责阻塞，不应把 paused 当作“终止”
   - `is_step_mode_enabled()`：检查是否启用单步模式
 - 私有槽：`_on_pause_clicked` / `_on_resume_clicked` / `_on_stop_clicked` / `_on_step_mode_toggled` / `_on_next_step_clicked`
 - 按钮连接：内部自动连接所有控制按钮的信号

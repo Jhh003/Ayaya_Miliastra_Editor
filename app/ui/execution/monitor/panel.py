@@ -84,6 +84,8 @@ class ExecutionMonitorPanel(QtWidgets.QWidget):
         self._compact_mode_enabled: bool = False
         self._compact_saved_main_window_state: dict | None = None
         self._compact_saved_log_splitter_sizes: list[int] | None = None
+        # 初始化：应用一次“非精简模式”的控件显隐状态（执行入口按钮默认应隐藏）
+        self._apply_compact_panel_ui(self._compact_mode_enabled)
         self._update_compact_mode_button_state()
 
         # Ctrl+P 快捷键：随时暂停
@@ -203,18 +205,27 @@ class ExecutionMonitorPanel(QtWidgets.QWidget):
         self.drag_left_button.clicked.connect(lambda: self._on_directional_drag_clicked(is_left=True))
         self.drag_right_button.clicked.connect(lambda: self._on_directional_drag_clicked(is_left=False))
 
-        # 测试按钮
-        self._ui_refs["test_ocr_button"].clicked.connect(lambda: self._actions.test_ocr())
-        self._ui_refs["test_settings_button"].clicked.connect(lambda: self._actions.test_settings())
-        self._ui_refs["test_warning_button"].clicked.connect(lambda: self._actions.test_warning())
-        self._ui_refs["test_ocr_zoom_button"].clicked.connect(lambda: self._actions.test_ocr_zoom())
-        self._ui_refs["test_nodes_button"].clicked.connect(lambda: self._actions.test_nodes())
-        self._ui_refs["test_ports_button"].clicked.connect(lambda: self._actions.test_ports())
-        self._ui_refs["test_ports_deep_button"].clicked.connect(lambda: self._actions.test_ports_deep())
-        self._ui_refs["test_settings_tpl_button"].clicked.connect(lambda: self._actions.test_settings_tpl())
-        self._ui_refs["test_add_button"].clicked.connect(lambda: self._actions.test_add_templates())
-        self._ui_refs["test_search_button"].clicked.connect(lambda: self._actions.test_searchbar_templates())
-        self._ui_refs["test_window_strict_button"].clicked.connect(self._on_test_window_strict_clicked)
+        # 测试动作（菜单）：避免把大量测试按钮直接放进布局，从而影响窗口最小尺寸与缩放体验
+        def _connect_test_action(action_key: str, handler) -> None:
+            action = self._ui_refs.get(action_key)
+            if not isinstance(action, QtGui.QAction):
+                return
+            action.triggered.connect(lambda _checked=False: handler())
+
+        _connect_test_action("test_ocr_action", self._actions.test_ocr)
+        _connect_test_action("test_settings_action", self._actions.test_settings)
+        _connect_test_action("test_warning_action", self._actions.test_warning)
+        _connect_test_action("test_ocr_zoom_action", self._actions.test_ocr_zoom)
+        _connect_test_action("test_nodes_action", self._actions.test_nodes)
+        _connect_test_action("test_ports_action", self._actions.test_ports)
+        _connect_test_action("test_ports_deep_action", self._actions.test_ports_deep)
+        _connect_test_action("test_settings_tpl_action", self._actions.test_settings_tpl)
+        _connect_test_action("test_add_action", self._actions.test_add_templates)
+        _connect_test_action("test_search_action", self._actions.test_searchbar_templates)
+
+        strict_action = self._ui_refs.get("test_window_strict_action")
+        if isinstance(strict_action, QtGui.QAction):
+            strict_action.triggered.connect(lambda _checked=False: self._on_test_window_strict_clicked())
 
         # 日志控制
         self._ui_refs["log_clear_button"].clicked.connect(self.clear_log)
@@ -302,7 +313,8 @@ class ExecutionMonitorPanel(QtWidgets.QWidget):
         self.resume_button.setVisible(not enabled)
         self.next_step_button.setVisible(not enabled)
         self.step_mode_checkbox.setVisible(not enabled)
-        self.stop_button.setVisible(bool(enabled))
+        # 终止按钮在完整/精简两种模式下都应可见；精简模式仅隐藏“暂停/继续/下一步/单步”。
+        self.stop_button.setVisible(True)
 
         tests_widget = self._ui_refs.get("tests_widget")
         if isinstance(tests_widget, QtWidgets.QWidget):
@@ -683,14 +695,14 @@ class ExecutionMonitorPanel(QtWidgets.QWidget):
     def _update_drag_origin_from_focus(self) -> None:
         """根据 FocusController 中记录的视口矩形，刷新拖拽测试区的当前中心显示。"""
         if not hasattr(self, "_focus") or self._focus is None:
-            self.drag_origin_label.setText("当前中心: 未定位")
+            self.drag_origin_label.setText("未定位")
             return
         center = self._focus.get_last_program_viewport_center()
         if center is None:
-            self.drag_origin_label.setText("当前中心: 未定位")
+            self.drag_origin_label.setText("未定位")
             return
         center_x, center_y = center
-        self.drag_origin_label.setText(f"当前中心: ({center_x:.1f}, {center_y:.1f})")
+        self.drag_origin_label.setText(f"({center_x:.1f}, {center_y:.1f})")
         # 若用户尚未填写目标坐标，优先填入当前中心，便于在此基础上偏移
         if not str(self.drag_target_x_input.text() or "").strip():
             self.drag_target_x_input.setText(f"{center_x:.1f}")

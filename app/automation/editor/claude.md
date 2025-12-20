@@ -29,6 +29,7 @@
 - 连线拖拽应尽量提供“结果校验”（例如拖拽后截图差分确认画面发生连线变化），避免静默失败导致后续步骤在错误状态上继续执行。
 - 画布吸附（`snap_screen_point_to_canvas_background`）对可见节点 bbox 默认做外扩避让（默认 **14px**，可用执行器属性 `canvas_node_avoid_padding_px` 调整），避免在节点边缘发起右键拖拽/右键点击导致无效或误触。
 - 视口对齐（`ensure_program_point_visible`）加入“连续拖拽画面无明显变化则中止”的保护，避免在拖拽未生效时按预期位移更新坐标映射造成漂移。可用执行器属性 `view_pan_no_visual_change_abort_consecutive` / `view_pan_no_visual_change_mean_diff_threshold` 调整阈值。
+- 视口对齐对相位相关（phase correlation）输出增加一致性保护：若估计位移与预期拖拽内容位移方向相反或偏差过大，将视为无效并走回退路径，避免 `origin_node_pos` 被一次异常 Δ 拉飞。
 - 步骤统一日志（`log_start/log_ok/log_fail`）的 `module_and_function` 字符串统一使用 `app.automation.*` 前缀，避免出现过时命名导致检索与定位困难。
 - 锚点校准阶段的“锚点节点出现”轮询默认超时为 **3s**（轮询间隔由 `DEFAULT_WAIT_POLL_INTERVAL_SECONDS` 控制）；若画面不变且未命中，应尽快回退/触发恢复动作，避免无意义长时间等待。
 - 端口连线调试叠加层（`port_matching.py`）会额外标注“端口识别跳过的节点顶部区域”（红框），排除高度统一来自 `app.automation.vision.get_port_recognition_header_height_px()`，便于排查分辨率/缩放差异带来的识别偏移问题。

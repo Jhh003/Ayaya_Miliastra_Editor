@@ -21,6 +21,7 @@
 - `resource_context.py` 支持注入应用层 `graph_code_generator` 用于节点图保存（仅 app/UI 侧需要），避免引擎层绑定代码生成策略。
 - **引用追踪缓存**：节点图引用追踪器（`graph_reference_tracker.py`）在需要展示引用计数/引用详情时，会构建 `graph_id -> references` 的反向索引并按“资源库指纹”失效，避免在 UI 列表刷新中重复全量扫描全部存档/模板/实例。
 - **代码生成解耦**：节点图 `.py` 源码生成不再由 `engine` 内部硬编码实现；`GraphResourceService.save_graph` 依赖注入 `graph_code_generator.generate_code(GraphModel, metadata)`，由应用层决定运行时导入/插件导入与是否注入校验逻辑。
+- **文件夹结构枚举**：节点图库的“文件夹树”需要枚举磁盘上的空目录；该枚举应避免使用 `Path.rglob` 直接遍历（Windows 下遇到异常目录项可能抛错并中断），优先采用“尽力而为”的遍历策略（如 `os.walk`）。
 
 ## 注意事项
 - 禁止直接拼资源路径；统一通过 `ResourceFileOps` 与 `ResourceManager`。

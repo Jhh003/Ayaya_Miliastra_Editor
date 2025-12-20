@@ -60,6 +60,11 @@ class ImmediatePersistMixin:
         operation = getattr(event, "operation", "") or ""
         context = getattr(event, "context", None)
 
+        current_package_id = None
+        if hasattr(self, "package_controller"):
+            current_package_id = getattr(self.package_controller, "current_package_id", None)
+        is_special_view = current_package_id in ("global_view", "unclassified_view")
+
         if kind == "template":
             template_id = event.id
         elif kind == "instance":
@@ -67,8 +72,10 @@ class ImmediatePersistMixin:
         elif kind == "graph":
             graph_dirty = True
         elif kind == "combat":
-            combat_dirty = True
-            index_dirty = True
+            # 战斗预设库页的 create/delete 主要影响“当前存档索引引用列表”；
+            # 在 global/unclassified 视图下没有 PackageIndex，因此不应触发存档保存。
+            combat_dirty = not is_special_view
+            index_dirty = not is_special_view
         elif kind == "management":
             combat_dirty = False
             section_key = None
@@ -120,6 +127,7 @@ class ImmediatePersistMixin:
         template_id: str | None = None,
         instance_id: str | None = None,
         management_keys: set[str] | None = None,
+        combat_preset_key: tuple[str, str] | None = None,
         combat_dirty: bool = False,
         signals_dirty: bool = False,
         index_dirty: bool = False,
@@ -146,6 +154,9 @@ class ImmediatePersistMixin:
                 controller.mark_instance_dirty(instance_id)
             if management_keys:
                 controller.mark_management_dirty(management_keys)
+            if combat_preset_key is not None:
+                section_key, item_id = combat_preset_key
+                controller.mark_combat_preset_dirty(section_key, item_id)
             if combat_dirty:
                 controller.mark_combat_dirty()
             if signals_dirty:
