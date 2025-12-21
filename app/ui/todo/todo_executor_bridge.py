@@ -67,6 +67,10 @@ class TodoExecutorBridge(QtCore.QObject):
 
     # === 公有入口 ===
 
+    def is_execution_running(self) -> bool:
+        """当前是否存在正在运行的执行线程。"""
+        return self._execution_runner is not None
+
     def execute_template_graph_root(self) -> None:
         """从当前上下文执行模板图根。
 
@@ -325,6 +329,8 @@ class TodoExecutorBridge(QtCore.QObject):
 
     def _start_runner(self, executor: EditorExecutor, graph_model: GraphModel, step_list: list, monitor_panel, continuous: bool) -> None:
         self._execution_runner = ExecutionRunner(self.host)
+        # 执行开始：确保运行时全局热键处于正确注册状态（例如 Ctrl+P 暂停）。
+        self.host.sync_global_hotkeys()
         # 重置本轮运行状态
         self._run_had_failure = False
         self._run_step_order = {}
@@ -338,6 +344,9 @@ class TodoExecutorBridge(QtCore.QObject):
                     self._run_step_order[todo_id] = idx
 
         self._execution_runner.finished.connect(lambda: setattr(self, "_execution_runner", None))
+        # 执行结束：根据“页面可见性/是否仍在执行”规则同步热键注册状态。
+        # 注意：该连接需在上面的 setattr 之后建立，确保 sync 时 _execution_runner 已置空。
+        self._execution_runner.finished.connect(self.host.sync_global_hotkeys)
         self._execution_runner.step_will_start.connect(self._on_step_will_start)
         self._execution_runner.step_will_start.connect(self._pause_if_step_mode)
         self._execution_runner.step_will_start.connect(self._set_monitor_step_context)

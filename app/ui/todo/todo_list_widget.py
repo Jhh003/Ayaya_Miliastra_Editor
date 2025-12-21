@@ -419,23 +419,49 @@ class TodoListWidget(QtWidgets.QWidget):
     # 执行过程中的回填/暂停/上下文同步由 TodoExecutorBridge 负责
     
     # 查找事件流根已由 TodoTreeManager 提供
+
+    def _should_keep_global_hotkeys_registered(self) -> bool:
+        """判断是否需要保持系统级全局热键处于注册状态。
+
+        约定：
+        - 当任务清单页可见时：注册热键，用于 Ctrl+[ / Ctrl+] 导航与 Ctrl+P 暂停。
+        - 当任务清单页不可见时：仅在执行线程运行中保留热键，使 Ctrl+P 仍可用于运行时暂停。
+
+        说明：
+        - Ctrl+P 是高频系统快捷键（常用于“打印”），因此**不应**在非执行场景下长期占用。
+        """
+        if self.isVisible():
+            return True
+
+        executor_bridge = getattr(self, "executor_bridge", None)
+        is_execution_running = getattr(executor_bridge, "is_execution_running", None)
+        if callable(is_execution_running):
+            return bool(is_execution_running())
+        return False
+
+    def sync_global_hotkeys(self) -> None:
+        """同步全局热键注册状态（见 `_should_keep_global_hotkeys_registered` 约定）。"""
+        if self._should_keep_global_hotkeys_registered():
+            success = self.hotkey_manager.register_hotkeys()
+            if success:
+                print("[任务清单] 全局热键已注册 (Ctrl+[ / Ctrl+] / Ctrl+P)")
+            else:
+                print("[任务清单] 全局热键注册失败")
+            return
+
+        self.hotkey_manager.unregister_hotkeys()
+        print("[任务清单] 全局热键已注销")
     
     def showEvent(self, event: QtGui.QShowEvent) -> None:
         """页面显示事件 - 注册全局热键"""
         super().showEvent(event)
-        # 注册热键
-        success = self.hotkey_manager.register_hotkeys()
-        if success:
-            print("[任务清单] 全局热键已注册 (Ctrl+[ / Ctrl+] / Ctrl+P)")
-        else:
-            print("[任务清单] 全局热键注册失败")
+        self.sync_global_hotkeys()
     
     def hideEvent(self, event: QtGui.QHideEvent) -> None:
         """页面隐藏事件 - 注销全局热键"""
         super().hideEvent(event)
-        # 注销热键
-        self.hotkey_manager.unregister_hotkeys()
-        print("[任务清单] 全局热键已注销")
+        # 注意：执行进行中时不要注销全局热键，否则运行时 Ctrl+P 将失效。
+        self.sync_global_hotkeys()
 
     # 编辑请求桥接：供 preview_panel 调用
     def _open_graph_in_editor(self, graph_id: str, graph_data: dict, container: object) -> None:

@@ -27,7 +27,7 @@
   - `test_pull_eval_reevaluation_hazard_rule.py`：构造“简单误用 + 复杂控制流误用（for/match/if）+ 不触发对照”三类 Graph Code，验证校验器会对“读-改-写自定义变量后仍复用同一【获取自定义变量】节点实例”的模式报告 `CODE_PULL_EVAL_REEVAL_AFTER_WRITE` warning，并避免对安全写法产生误报。
   - `test_graph_variable_rules.py`：构造临时 Graph Code 覆盖图变量声明缺失与 GRAPH_VARIABLES 中类型非法的分支，并额外验证 GRAPH_VARIABLES 默认值中包含负数字面量（如 `-1.0`）时元数据提取结果正确，确保代码级声明成为唯一的变量与类型校验来源。
   - `test_type_registry_alignment.py`：回归“类型体系单一事实来源”约束，确保变量类型清单、结构体字段允许类型、验证层与配置层的 datatype_rules、端口常量与别名字典解析等均与 `engine/type_registry.py` 对齐，防止新增/调整类型时出现跨模块漂移。
-  - `test_local_variable_rules.py`：围绕局部变量相关校验规则构造最小 Graph Code 与复合节点示例，验证【获取局部变量→设置局部变量】模式下必须为“初始值”提供有效数据来源。
+  - `test_local_variable_rules.py`：围绕局部变量相关校验规则构造最小 Graph Code 与复合节点示例，验证【获取局部变量】必须提供“初始值”、且必须正确选择二元输出（解包或下标）；同时回归“已知节点必须传 game”的通用规则，避免漏传 `self.game/game` 导致问题潜伏到运行期。
 - 复合节点 pin_type 策略回归：`test_composite_pin_type_policy.py` 通过 `validate_files` 构造最小类格式与 payload 复合节点源码片段，验证“泛型/列表/泛型列表/泛型字典”只能作为编辑期占位，成品校验必须报错；并同时验证 Any/通用旧别名与 Python 内置类型名（int/float/str/bool/list/dict）同样会报错。
 - 复合节点模板校验：`test_composite_multi_pins_template.py` 解析 `composite_多引脚模板_示例.py`，检查虚拟引脚类型/方向、分支流程出口映射和关键计算节点（加法、数值比较、列表长度/取值）均按设计生成。
 - 复合节点文件发现一致性回归：`test_composite_file_discovery_policy.py` 回归“复合节点定义文件筛选规则单一事实来源”，确保 `engine.nodes.composite_file_policy`、复合节点管线 discovery、以及 `CompositeNodeManager` 加载集合一致，避免入口间漂移。
@@ -43,6 +43,7 @@
   - `common/test_in_memory_graph_payload_cache_contract.py`：回归 `app.common.in_memory_graph_payload_cache` 的 cache_key 规则、detail_info 的 `graph_data/graph_data_key` 解析优先级，以及按图/按图根失效语义，避免任务清单预览/执行链路的缓存一致性回退。
   - `automation/test_executor_protocol_contract.py`：对 `EditorExecutorProtocol`/`ViewportController` 的关键方法做反射级签名一致性检查，并验证关键模块使用协议类型注解，避免跨模块回退到具体实现类导致耦合膨胀。
 - 自动化截图 ROI 边界回归：`test_roi_config_bounds.py` 验证 `app.automation.capture.roi_config.get_region_rect` 对派生 ROI（如“节点图缩放区域”）返回的矩形始终在图像范围内，避免识别框越界与 OCR 空图问题。
+- 端口识别标题栏排除高度边界回归：`test_port_recognition_header_height_bounds.py` 验证 `app.automation.vision.ui_profile_params.get_port_header_height_px()` 返回值会夹取到 **[20px, 26px]**，避免低分辨率/低缩放下排除区域过小导致端口模板误匹配到标题栏。
 - 资源索引命名策略回归：`test_resource_name_filename_sync_policy.py` 覆盖“扫描阶段是否允许将文件名回写到 JSON.name”的策略边界，确保默认缓存文件名策略下 UI 改名不会被索引扫描回滚；同时对“保存时以 name 驱动物理文件名”的类型保留同步能力。
 - 块间排版（块与块之间）居中：`test_block_vertical_centering.py` 直接构造 `LayoutBlock` 与父子关系，验证 `BlockPositioningEngine` 在“多父合流 / 多子分叉”场景下能把目标块放在邻居块组的垂直中间，并避免因同列无约束大块而把应居中的块顶下去。
   - 同文件额外包含“分叉子块列内顺序只能做局部互换”的回归用例：确保按端口顺序调整分叉子块时不会把同列的非兄弟块整体挤走（防止整列重排导致结构被破坏）。
