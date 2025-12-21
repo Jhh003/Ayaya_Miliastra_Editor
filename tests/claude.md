@@ -43,6 +43,7 @@
   - `common/test_in_memory_graph_payload_cache_contract.py`：回归 `app.common.in_memory_graph_payload_cache` 的 cache_key 规则、detail_info 的 `graph_data/graph_data_key` 解析优先级，以及按图/按图根失效语义，避免任务清单预览/执行链路的缓存一致性回退。
   - `automation/test_executor_protocol_contract.py`：对 `EditorExecutorProtocol`/`ViewportController` 的关键方法做反射级签名一致性检查，并验证关键模块使用协议类型注解，避免跨模块回退到具体实现类导致耦合膨胀。
 - 自动化截图 ROI 边界回归：`test_roi_config_bounds.py` 验证 `app.automation.capture.roi_config.get_region_rect` 对派生 ROI（如“节点图缩放区域”）返回的矩形始终在图像范围内，避免识别框越界与 OCR 空图问题。
+- 端口识别标题栏排除高度边界回归：`test_port_recognition_header_height_bounds.py` 验证 `app.automation.vision.ui_profile_params.get_port_header_height_px()` 返回值会夹取到 **[20px, 26px]**，避免低分辨率/低缩放下排除区域过小导致端口模板误匹配到标题栏。
 - 资源索引命名策略回归：`test_resource_name_filename_sync_policy.py` 覆盖“扫描阶段是否允许将文件名回写到 JSON.name”的策略边界，确保默认缓存文件名策略下 UI 改名不会被索引扫描回滚；同时对“保存时以 name 驱动物理文件名”的类型保留同步能力。
 - 块间排版（块与块之间）居中：`test_block_vertical_centering.py` 直接构造 `LayoutBlock` 与父子关系，验证 `BlockPositioningEngine` 在“多父合流 / 多子分叉”场景下能把目标块放在邻居块组的垂直中间，并避免因同列无约束大块而把应居中的块顶下去。
   - 同文件额外包含“分叉子块列内顺序只能做局部互换”的回归用例：确保按端口顺序调整分叉子块时不会把同列的非兄弟块整体挤走（防止整列重排导致结构被破坏）。

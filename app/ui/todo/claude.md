@@ -22,6 +22,7 @@
 - 从图编辑器进入任务清单的“无缝体验”要求：跳转时应尽可能在同一帧将共享画布挂到预览页（`TodoPreviewPanel.show_shared_canvas_now()`），避免使用较大的 QTimer 延迟导致用户视觉上感知为“画布重新打开”。
 - 从主窗口获取稳定依赖（workspace_path/节点库/ResourceManager 等）时，应通过 `main_window.app_state` 访问，避免依赖 `main_window.workspace_path/main_window.library/...` 这类旧式兼容别名。
 - 执行监控面板的访问与显隐统一通过 `main_window.right_panel`（tab_id=`execution_monitor`）；任务清单不再依赖主窗口上额外挂的面板别名属性。
+- 全局热键（Ctrl+[ / Ctrl+] / Ctrl+P）由 `TodoListWidget` 统一管理：任务清单页可见时注册；任务清单页不可见时仅在执行线程运行中保留注册，避免非执行场景长期占用 Ctrl+P。
 - 运行时（`python -m app.cli.run_app`）sys.path 默认不包含 `.../app`，因此 **app 内部必须统一使用 `app.ui.*` 导入路径**，不要在 app 包内部写 `ui.*` 导入。
 - pytest 不应将 `<repo>/app` 加入 `sys.path`，因此 **`ui` 不是顶层包**；测试与应用代码统一使用 `app.ui.*` 导入路径，避免 `ui.*` 与 `app.ui.*` 双导入导致类对象不一致。
 

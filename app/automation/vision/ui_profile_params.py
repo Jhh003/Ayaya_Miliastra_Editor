@@ -52,6 +52,8 @@ def _scale_pair(pair_px: Tuple[int, int], factor: float) -> Tuple[int, int]:
 
 _BASE_PROFILE_NAME = "4K-100-CN"
 _BASE_PORT_HEADER_HEIGHT_PX = 21
+# 端口识别跳过节点顶部标题栏的最小像素高度（避免 1080/2K@100% 下排除区域过小）
+_MIN_PORT_HEADER_HEIGHT_PX = 20
 # 端口识别排除顶部区域的最大像素高度（用户实测 4K125 只需 26px）
 _MAX_PORT_HEADER_HEIGHT_PX = 26
 _BASE_PARAMS = AutomationUiProfileParams(
@@ -173,8 +175,13 @@ def resolve_automation_ui_params(*, workspace_root: Optional[Path] = None, prefe
     return _build_scaled_from_base(profile_name=profile_name or _BASE_PROFILE_NAME, port_header_height_px=header_height)
 
 
+def _clamp_port_header_height_px(header_height_px: int) -> int:
+    return int(max(_MIN_PORT_HEADER_HEIGHT_PX, min(int(header_height_px), _MAX_PORT_HEADER_HEIGHT_PX)))
+
+
 def get_port_header_height_px(*, workspace_root: Optional[Path] = None) -> int:
-    return int(resolve_automation_ui_params(workspace_root=workspace_root).port_header_height_px)
+    raw_value = int(resolve_automation_ui_params(workspace_root=workspace_root).port_header_height_px)
+    return _clamp_port_header_height_px(raw_value)
 
 
 def get_candidate_search_margin_top_px(*, workspace_root: Optional[Path] = None) -> int:
