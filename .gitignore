@@ -84,9 +84,13 @@ assets/资源库/**
 !assets/资源库/节点图/claude.md
 !assets/资源库/节点图/server/claude.md
 !assets/资源库/节点图/server/模板示例/claude.md
+!assets/资源库/节点图/server/九权/claude.md
 !assets/资源库/节点图/client/claude.md
 !assets/资源库/节点图/client/技能节点图/claude.md
 !assets/资源库/节点图/client/本地过滤器节点图/claude.md
+
+# 九权天部 Roguelike 核心机制节点图（公开发布）
+!assets/资源库/节点图/server/九权/*.py
 
 # 明确白名单：复合节点模板（用于公开测试与示例）
 !assets/资源库/复合节点库/composite_多引脚模板_示例.py
